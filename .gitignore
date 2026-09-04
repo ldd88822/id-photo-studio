@@ -1,0 +1,6 @@
+.workbuddy/
+预览截图/
+server.log
+.chk/
+*.log
+.DS_Store

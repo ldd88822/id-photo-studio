@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>证件照工作台 · 抠图 / 换底 / 规格 / 排版</title>
+<link rel="stylesheet" href="./assets/app.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">证</span>
+    <div class="brand-txt"><b>证件照工作台</b><small>上传 → 选规格 → 换底色 → 预览 → 下载</small></div>
+  </div>
+  <div class="steps" id="steps">
+    <span data-s="1">1 上传</span><i></i><span data-s="2">2 抠图</span><i></i><span data-s="3">3 规格</span><i></i><span data-s="4">4 换底</span><i></i><span data-s="5">5 下载</span>
+  </div>
+  <div class="top-actions">
+    <button class="btn ghost sm" id="btnNew" hidden>重新制作</button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- 上传 -->
+  <section class="drop" id="drop">
+<div class="drop-inner">
+        <div class="drop-icon">＋</div>
+        <h2>上传一张人真实照片</h2>
+        <p>正面 · 免冠 · 光线均匀的 JPG/PNG，自动抠图换底，一键生成证件照</p>
+        <div class="drop-btns">
+          <button class="btn primary" id="btnPick">选择照片</button>
+          <button class="btn" id="btnCam">拍照</button>
+        </div>
+        <p class="tip">上传后可点 <b>+ 参考底图</b> 加载定位模板（不导出）。</p>
+        <p class="tip dim">照片仅在本地浏览器处理，不会上传到任何服务器。</p>
+      </div>
+    <input type="file" id="file" accept="image/*" hidden />
+  </section>
+
+  <!-- 工作区 -->
+  <div class="ws hidden" id="ws">
+    <section class="stage">
+      <div class="stage-head">
+        <div class="chips" id="bgChips"></div>
+        <button class="btn ghost sm" id="btnTpl">+ 参考底图</button>
+        <button class="btn ghost sm" id="btnSwap" title="交换主照片与参考底图">⇄ 交换</button>
+        <input type="file" id="fileTpl" accept="image/*" hidden />
+      </div>
+
+      <div class="canvas-box" id="canvasBox">
+        <div class="photo" id="photo">
+          <canvas id="cvMain"></canvas>
+          <canvas id="cvGuide"></canvas>
+          <div class="loading hidden" id="loading"><span class="spin"></span><p id="loadTxt">正在抠图…</p></div>
+        </div>
+      </div>
+
+      <div class="stage-foot">
+        <button class="btn ghost sm" id="btnGuide">参考线</button>
+        <div class="zoom">
+          <button class="round" id="zoomOut">−</button>
+          <input type="range" id="zoom" min="0.3" max="3" step="0.01" value="1" />
+          <button class="round" id="zoomIn">＋</button>
+        </div>
+        <button class="btn ghost sm" id="btnAuto">自动构图</button>
+        <button class="btn ghost sm" id="btnReset">复位</button>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="tabs">
+        <button class="tab on" data-tab="spec">规格</button>
+        <button class="tab" data-tab="bg">底色</button>
+        <button class="tab" data-tab="fix">精修</button>
+        <button class="tab" data-tab="out">导出</button>
+      </div>
+
+      <section class="pane on" data-pane="spec">
+        <div class="field">
+          <label>规格分类</label>
+          <div class="seg" id="specGroup"></div>
+        </div>
+        <div class="field">
+          <label>选择规格</label>
+          <div class="grid" id="specList"></div>
+        </div>
+        <div class="field">
+          <label>像素尺寸</label>
+          <div class="row3">
+            <div><span>宽 mm</span><input id="mmW" type="number" step="0.5" min="5" /></div>
+            <div><span>高 mm</span><input id="mmH" type="number" step="0.5" min="5" /></div>
+            <div><span>DPI</span>
+              <select id="dpi"><option value="300">300</option><option value="600">600</option></select>
+            </div>
+          </div>
+        </div>
+        <p class="hint" id="specHint"></p>
+      </section>
+
+      <section class="pane" data-pane="bg">
+        <div class="field">
+          <label>常用底色</label>
+          <div class="swatches" id="bgList"></div>
+        </div>
+        <div class="field">
+          <label>自定义底色</label>
+          <div class="colorrow">
+            <input type="color" id="c1" value="#ffffff" />
+            <span class="dash">→</span>
+            <input type="color" id="c2" value="#eef2f7" />
+            <label class="chk"><input type="checkbox" id="grad" /><span>渐变</span></label>
+          </div>
+        </div>
+        <div class="field">
+          <label class="chk"><input type="checkbox" id="transparent" /><span>透明背景（仅 PNG 导出有效）</span></label>
+        </div>
+        <div class="field">
+          <label>多底色预览</label>
+          <div class="strip" id="strip"></div>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="fix">
+        <div class="field">
+          <label>参考底图（定位模板，不导出）</label>
+          <div class="seg small" style="margin-bottom:6px">
+            <button class="on" id="btnTpl2">加载 / 替换</button>
+            <button id="btnTplClear">清除</button>
+          </div>
+          <label class="chk"><input type="checkbox" id="tplOn" checked /><span>显示</span></label>
+          <label>不透明度 <b id="vTpl">0.45</b></label>
+          <input type="range" id="tplOp" min="0.1" max="1" step="0.05" value="0.45" />
+        </div>
+        <div class="field">
+          <label>边缘羽化 <b id="vFeather">1.0</b></label>
+          <input type="range" id="feather" min="0" max="6" step="0.1" value="1" />
+        </div>
+        <div class="field">
+          <label>去白边 <b id="vErode">0</b></label>
+          <input type="range" id="erode" min="0" max="4" step="1" value="0" />
+        </div>
+        <div class="field">
+          <label>亮度 <b id="vBri">100</b></label>
+          <input type="range" id="bri" min="60" max="140" step="1" value="100" />
+        </div>
+        <div class="field">
+          <label>对比度 <b id="vCon">100</b></label>
+          <input type="range" id="con" min="60" max="140" step="1" value="100" />
+        </div>
+        <div class="field">
+          <label>边缘修补笔</label>
+          <div class="seg small" id="brushMode">
+            <button data-b="0" class="on">关</button>
+            <button data-b="-1">擦除背景</button>
+            <button data-b="1">恢复人物</button>
+          </div>
+          <label>笔刷大小 <b id="vBrush">40</b></label>
+          <input type="range" id="brush" min="6" max="160" step="1" value="40" />
+          <button class="btn ghost sm block" id="btnClearBrush">清除修补痕迹</button>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="out">
+        <div class="field">
+          <label>文件名</label>
+          <input type="text" id="fname" value="证件照" />
+        </div>
+        <div class="field">
+          <label>格式</label>
+          <div class="seg small" id="fmt">
+            <button data-f="png" class="on">PNG</button>
+            <button data-f="jpg">JPG</button>
+          </div>
+        </div>
+        <button class="btn primary block" id="btnDownload">下载当前照片</button>
+
+        <div class="field">
+          <label>排版打印</label>
+          <div class="seg small" id="paper">
+            <button data-p="6" class="on">6寸</button>
+            <button data-p="5">5寸</button>
+            <button data-p="a4">A4</button>
+          </div>
+          <label class="chk"><input type="checkbox" id="cutline" checked /><span>显示裁切虚线</span></label>
+          <p class="hint" id="sheetHint"></p>
+          <button class="btn block" id="btnSheet">下载排版图</button>
+        </div>
+
+        <button class="btn ghost block" id="btnBatch">一键下载 白 / 蓝 / 红 三张</button>
+        <p class="hint">成品为 300dpi 印刷级尺寸，可直接冲印或上传报名系统。</p>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<!-- 拍照 -->
+<div class="modal hidden" id="camModal">
+  <div class="modal-box">
+    <div class="modal-head"><b>拍照</b><button class="x" id="camClose">×</button></div>
+    <video id="camVideo" autoplay playsinline muted></video>
+    <div class="modal-foot">
+      <button class="btn ghost" id="camSwitch">切换摄像头</button>
+      <button class="btn primary" id="camShot">拍摄</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
