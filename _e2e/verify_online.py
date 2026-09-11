@@ -14,6 +14,8 @@ CHECKS = [
     ('js/matting.js', 'probeWasmSpeed', 'wasm 速率探测'),
     ('js/matting.js', 'initPromise = null', '坏 Promise 不缓存'),
     ('js/matting.js', 'WASM_DECODED_SIZE', 'wasm 解压体积常量'),
+    ('js/app.js', 'buildEnhanced', '调色预烘焙（修角度丢对比度）'),
+    ('js/angle.js', 'st.enhanced || st.maskCanvas', '角度路径用烘焙画布'),
     ('js/transform.js', 'mirrorX', '镜像矩阵'),
     ('js/angle.js', 'ANGLE_FLAGS', '布尔开关表'),
     ('js/angle.js', '-90, 90', '拖拽量程钳制 ±90'),

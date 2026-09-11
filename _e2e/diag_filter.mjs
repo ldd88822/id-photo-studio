@@ -4,7 +4,7 @@
 import { chromium } from 'file:///C:/Users/廖先生/.workbuddy/binaries/node/workspace/node_modules/playwright/index.mjs';
 import path from 'node:path';
 
-const URL_BASE = 'http://127.0.0.1:8848/';
+const URL_BASE = process.env.IDP_URL || 'http://127.0.0.1:8848/';
 const profile = 'C:\\Users\\Public\\pw-filter-' + Date.now();
 
 const ctx = await chromium.launchPersistentContext(profile, {
