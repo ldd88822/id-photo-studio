@@ -61,7 +61,7 @@ NODE=/c/Users/$USER/.workbuddy/binaries/node/versions/$(cat ~/.workbuddy/binarie
 "$NODE" _e2e/run.mjs       # 端到端（需先起本地服务器），67 项
 ```
 
-合计 140 项。E2E 依赖的 playwright 模块在
+合计 143 项。E2E 依赖的 playwright 模块在
 `~/.workbuddy/binaries/node/workspace/node_modules/playwright`，脚本里用绝对路径引入。
 
 可用环境变量覆盖端到端地址：`BASE=http://127.0.0.1:8899 bash _run_tests.sh`。

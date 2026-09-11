@@ -10,9 +10,12 @@ let lastError = null;
 
 const VENDOR = new URL('../vendor/', import.meta.url).href;
 
-// wasm 体积 9.4MB，弱网（GitHub Pages 国内约 77KB/s）可达 2 分钟以上。
+// wasm 体积 9.4MB，弱网（GitHub Pages 国内约 43 KB/s）可达 2 分钟以上。
 // 单独给 wasm 一个长超时，避免整体卡死无反馈。
 const WASM_TIMEOUT_MS = 180000;
+
+// vendor/wasm/vision_wasm_internal.wasm 解压后的真实字节数（换 wasm 时要同步更新）
+const WASM_DECODED_SIZE = 9423986;
 
 let onProgress = null;
 /** 注册初始化进度回调：(phase, detail) => void */
@@ -42,7 +45,11 @@ async function probeWasmSpeed() {
     const t0 = Date.now();
     const res = await fetch(url, { signal: ctrl.signal, cache: 'force-cache' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const total = Number(res.headers.get('content-length')) || 9423986;
+    // total 不能用 content-length：线上走 gzip 时它是压缩后大小（约 2.9MB），
+    // 而 getReader() 读出来的是解压后数据（9.4MB），会导致百分比卡在 99% 且显示「8.9/2.8 MB」。
+    // 因此以 wasm 解压后的真实字节数为基准，取两者较大值兜底。
+    const cl = Number(res.headers.get('content-length')) || 0;
+    const total = cl >= WASM_DECODED_SIZE ? cl : WASM_DECODED_SIZE;
     if (!res.body || !res.body.getReader) {
       clearTimeout(timer);
       return { total, kbps: 0, ms: Date.now() - t0 };
@@ -53,13 +60,13 @@ async function probeWasmSpeed() {
       const { done, value } = await reader.read();
       if (done) break;
       got += value.length;
-      const pct = Math.min(99, Math.round((got / total) * 100));
+      const pct = Math.min(99, Math.floor((got / total) * 100));
       const secs = (Date.now() - t0) / 1000;
       const kbps = secs > 0 ? Math.round(got / 1024 / secs) : 0;
-      emit('download', { pct, got, total, kbps });
+      emit('download', { pct, got: Math.min(got, total), total, kbps });
     }
     clearTimeout(timer);
-    emit('download', { pct: 100, got, total, kbps: 0 });
+    emit('download', { pct: 100, got: total, total, kbps: 0 });
     return { total, ms: Date.now() - t0 };
   } catch (e) {
     emit('download-failed', { message: String((e && e.message) || e) });

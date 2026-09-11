@@ -511,18 +511,58 @@ try {
 
   // 进度回调：注册探针后强制重跑一次初始化，确认生命周期事件齐全
   // 注意：首次加载时模型可能已被预加载缓存，必须 force=true 才能重新触发事件
-  const phases = await page.evaluate(async () => {
+  const events = await page.evaluate(async () => {
     const m = await import('./js/matting.js');
     const seen = [];
-    m.setProgressHandler((p) => seen.push(p));
+    m.setProgressHandler((p, d) =>
+      seen.push({ phase: p, pct: d && d.pct, got: d && d.got, total: d && d.total })
+    );
     await m.initMatting(true);
     return seen;
   });
+  const phases = events.map((e) => e.phase);
   const hasReady = phases.includes('ready');
-  hasReady ? ok('初始化触发 ready 事件', phases.join(' → ')) : bad('未触发 ready 事件', JSON.stringify(phases));
+  hasReady ? ok('初始化触发 ready 事件', phases.slice(0, 3).join(' → ') + ' → … → ready') : bad('未触发 ready 事件', JSON.stringify(phases));
   phases.includes('prefetch') && phases.includes('parsing')
-    ? ok('初始化含 prefetch → parsing 阶段', phases.join(' → '))
+    ? ok('初始化含 prefetch → parsing 阶段')
     : bad('生命周期阶段缺失', JSON.stringify(phases));
+
+  // 进度数值必须自洽：got 不超 total、pct 落在 0~100
+  const dlEvents = events.filter((e) => e.phase === 'download' && e.total);
+  const badRange = dlEvents.filter((e) => e.got > e.total || e.pct < 0 || e.pct > 100);
+  dlEvents.length && !badRange.length
+    ? ok('进度数值自洽（got ≤ total，0 ≤ pct ≤ 100）', `${dlEvents.length} 个采样，total=${dlEvents[0].total}`)
+    : bad('进度数值越界', JSON.stringify(badRange.slice(0, 3)));
+
+  // 回归：线上 gzip 时 content-length 是压缩后大小（约 2.9MB），
+  // 若直接拿它当 total，百分比会卡在 99% 且显示「8.9/2.8 MB」。
+  // 这里伪造压缩头，断言 total 仍取解压后的真实体积。
+  const WASM_DECODED = 9423986;
+  await page.route('**/vision_wasm_internal.wasm', async (route) => {
+    const resp = await route.fetch();
+    const body = await resp.body();
+    await route.fulfill({
+      body,
+      headers: { ...resp.headers(), 'content-length': '2903515' },
+    });
+  });
+  const gzipEvents = await page.evaluate(async () => {
+    const m = await import('./js/matting.js');
+    const seen = [];
+    m.setProgressHandler((p, d) => seen.push({ phase: p, pct: d && d.pct, got: d && d.got, total: d && d.total }));
+    await m.initMatting(true);
+    return seen;
+  });
+  await page.unroute('**/vision_wasm_internal.wasm');
+  const gzDl = gzipEvents.filter((e) => e.phase === 'download' && e.total);
+  const gzTotal = gzDl.length ? gzDl[0].total : 0;
+  gzTotal === WASM_DECODED
+    ? ok('伪造 gzip content-length 后 total 仍取解压体积', String(gzTotal))
+    : bad('gzip 场景 total 错误', `total=${gzTotal}，期望 ${WASM_DECODED}`);
+  const gzBad = gzDl.filter((e) => e.got > e.total || e.pct > 100);
+  !gzBad.length && gzDl.length
+    ? ok('gzip 场景进度不越界')
+    : bad('gzip 场景进度越界', JSON.stringify(gzBad.slice(0, 3)));
 
   // 失败态可切换 + 重试可恢复
   const failState = await page.evaluate(() => {
