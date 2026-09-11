@@ -102,10 +102,13 @@ try {
 
   // ---- 滑块是否已由 ANGLE_PARAMS 生成 ----
   const sliderCount = await page.locator('#angleSliders .angle-range').count();
-  sliderCount === 9 ? ok('9 个参数滑块已生成') : bad('参数滑块数量', String(sliderCount));
+  sliderCount === 5 ? ok('5 个参数滑块已生成') : bad('参数滑块数量', String(sliderCount));
 
   const rows = await page.locator('#angleSliders .angle-row').evaluateAll((els) => els.map((e) => e.dataset.key));
   ok('滑块 key 列表', rows.join(','));
+  rows.join(',') === 'rotate,pitch,zoom,distort,fov'
+    ? ok('滑块顺序与数量完全符合精简后的参数表')
+    : bad('滑块 key 列表不符合预期', rows.join(','));
 
   // 记录初始状态：不用逐像素哈希（两条渲染路径的插值实现不同，
   // 同样的几何也会产生不同的像素值），改用「前景边界 + 质心」这种结构性指标
@@ -197,25 +200,36 @@ try {
     ? ok('重做恢复旋转值', rotAfterRedo)
     : bad('重做恢复旋转值', `${rotVal} -> ${rotAfterRedo}`);
 
-  // ---- 滑块调整：roll ----
-  await page.click('#angleMode button[data-m="roll"]');
-  await page.locator('.angle-range[data-key="roll"]').evaluate((el) => {
+  // ---- 滑块调整：pitch ----
+  await page.click('#angleMode button[data-m="pitch"]');
+  await page.locator('.angle-range[data-key="pitch"]').evaluate((el) => {
     el.value = '12';
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  const rollVal = await page.inputValue('.angle-num[data-key="roll"]');
-  parseFloat(rollVal) === 12 ? ok('滑块设置 roll=12') : bad('滑块设置 roll=12', rollVal);
+  const pitchVal = await page.inputValue('.angle-num[data-key="pitch"]');
+  parseFloat(pitchVal) === 12 ? ok('滑块设置 pitch=12') : bad('滑块设置 pitch=12', pitchVal);
 
-  // ---- 数值输入：yaw ----
-  await page.click('#angleMode button[data-m="yaw"]');
-  const yawNum = page.locator('.angle-num[data-key="yaw"]');
-  await yawNum.fill('8.5');
-  await yawNum.press('Enter');
-  const yawVal = await page.inputValue('.angle-num[data-key="yaw"]');
-  parseFloat(yawVal) === 8.5 ? ok('数值输入 yaw=8.5') : bad('数值输入 yaw=8.5', yawVal);
-  const yawRange = await page.inputValue('.angle-range[data-key="yaw"]');
-  parseFloat(yawRange) === 8.5 ? ok('滑块与数值双向同步') : bad('滑块与数值双向同步', yawRange);
+  // ---- 数值输入：zoom ----
+  const zoomNum = page.locator('.angle-num[data-key="zoom"]');
+  await zoomNum.fill('1.25');
+  await zoomNum.press('Enter');
+  const zoomVal = await page.inputValue('.angle-num[data-key="zoom"]');
+  parseFloat(zoomVal) === 1.25 ? ok('数值输入 zoom=1.25') : bad('数值输入 zoom=1.25', zoomVal);
+  const zoomRange = await page.inputValue('.angle-range[data-key="zoom"]');
+  parseFloat(zoomRange) === 1.25 ? ok('滑块与数值双向同步') : bad('滑块与数值双向同步', zoomRange);
+  await zoomNum.fill('1');
+  await zoomNum.press('Enter');
+
+  // ---- 已移除的参数不应再出现在面板上 ----
+  for (const key of ['roll', 'yaw', 'perspX', 'perspY']) {
+    const n = await page.locator(`.angle-num[data-key="${key}"]`).count();
+    n === 0 ? ok(`${key} 已从面板移除`) : bad(`${key} 仍存在于面板`, `找到 ${n} 个`);
+  }
+  for (const m of ['roll', 'yaw', 'persp']) {
+    const n = await page.locator(`#angleMode button[data-m="${m}"]`).count();
+    n === 0 ? ok(`快捷模式「${m}」已移除`) : bad(`快捷模式 ${m} 仍存在`);
+  }
 
   // ---- 水平吸附：输入 1.2 应归零 ----
   await page.click('#angleMode button[data-m="rotate"]');
@@ -241,27 +255,11 @@ try {
   // ---- 三档复位 ----
   await page.click('#angleReset');
   const afterGroupReset = await page.inputValue('.angle-num[data-key="rotate"]');
-  const rollStill = await page.inputValue('.angle-num[data-key="roll"]');
+  const pitchStill = await page.inputValue('.angle-num[data-key="pitch"]');
   parseFloat(afterGroupReset) === 0 ? ok('复位本组：rotate 归零') : bad('复位本组 rotate', afterGroupReset);
-  parseFloat(rollStill) === 12 ? ok('复位本组未误伤其他组（roll 保持 12）') : bad('复位本组误伤', rollStill);
+  parseFloat(pitchStill) === 12 ? ok('复位本组未误伤其他组（pitch 保持 12）') : bad('复位本组误伤', pitchStill);
 
-  // ---- 透视 ----
-  await page.click('#angleMode button[data-m="persp"]');
-  await page.locator('.angle-range[data-key="perspX"]').evaluate((el) => {
-    el.value = '0.2';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  const hPersp = await canvasHash();
-  hPersp !== h0 ? ok('透视校正改变画面') : bad('透视校正改变画面');
-  // 梯形方向的精确语义由 _test.mjs 的源码级断言覆盖；
-  // 端到端这里只确认「变换确实被应用到渲染结果上」（bbox 有位移即可）
-  const mPersp = await fgMetrics();
-  const perspBoxDiff = mPersp.bbox.reduce((s, v, i) => s + Math.abs(v - m0.bbox[i]), 0);
-  perspBoxDiff > 2
-    ? ok('透视校正已作用于前景几何', `bbox 差 ${perspBoxDiff}px`)
-    : bad('透视校正未作用于前景', `bbox 差 ${perspBoxDiff}px`);
-
-  // ---- 旋转中心（用 rotate 模式验证，透视与轴心无关）----
+  // ---- 旋转中心（用 rotate 模式验证）----
   await page.click('#angleMode button[data-m="rotate"]');
   await page.click('#pivotMode button[data-p="center"]');
   await page.click('#angleResetAll');
@@ -294,33 +292,32 @@ try {
   boxDiff > 6 || areaDiff > 0.02 || Math.abs(mPivotCustom.cx - mPivotCenter.cx) > 3
     ? ok('拖动轴心后画面改变', `bbox 差 ${boxDiff}px / 质心差 ${Math.abs(mPivotCustom.cx - mPivotCenter.cx).toFixed(1)}px`)
     : bad('拖动轴心后画面改变', `bbox 差 ${boxDiff}px / 面积差 ${(areaDiff * 100).toFixed(1)}%`);
-  // 轴心标记应绘制在轴心位置：直接检查变量，比截图更可靠
-  const pivotXY = await page.evaluate(() => {
-    const S = window.__S;
-    return S && S.tf ? window.__pivotXY : null;
-  });
   await page.screenshot({ path: path.join(OUT, '03-自定义旋转中心.png') });
 
-  // 透视校正应当与轴心无关（回归防护）：同样是结构比对
+  // 轴心只作用于几何链、不影响 cover 铺排：换轴心时画面中心取样点应保持稳定
   await page.click('#pivotMode button[data-p="center"]');
-  await page.click('#angleMode button[data-m="persp"]');
   await page.click('#angleResetAll');
-  await page.locator('.angle-range[data-key="perspX"]').evaluate((el) => {
-    el.value = '0.25';
+  await page.locator('.angle-range[data-key="rotate"]').evaluate((el) => {
+    el.value = '18';
     el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await page.waitForTimeout(150);
-  const mPerspA = await fgMetrics();
+  const mAxisA = await fgMetrics();
   await page.click('#pivotMode button[data-p="custom"]');
-  await page.mouse.click(box.x + box.width * 0.2, box.y + box.height * 0.7);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height * 0.75, { steps: 10 });
+  await page.mouse.up();
   await page.waitForTimeout(250);
-  const mPerspB = await fgMetrics();
-  const perspDrift = mPerspA && mPerspB
-    ? Math.abs(mPerspB.cx - mPerspA.cx) + Math.abs(mPerspB.cy - mPerspA.cy)
-    : 999;
-  perspDrift < 3
-    ? ok('透视校正与旋转中心解耦（不会误受轴心影响）', `质心漂移 ${perspDrift.toFixed(1)}px`)
-    : bad('透视受轴心污染', `质心漂移 ${perspDrift.toFixed(1)}px`);
+  const mAxisB = await fgMetrics();
+  // 轴心改变必然改变几何，所以这里只断言「变了」，且幅度在合理范围内（不是整幅跑飞）
+  const axisDrift = mAxisA && mAxisB
+    ? Math.abs(mAxisB.cx - mAxisA.cx) + Math.abs(mAxisB.cy - mAxisA.cy)
+    : 0;
+  axisDrift > 1 && axisDrift < box.width
+    ? ok('轴心改变影响几何且幅度合理', `质心漂移 ${axisDrift.toFixed(1)}px`)
+    : bad('轴心改变影响异常', `质心漂移 ${axisDrift.toFixed(1)}px`);
   await page.click('#pivotMode button[data-p="center"]');
 
   // ---- 网格 ----
@@ -331,11 +328,14 @@ try {
   // ---- 全部复位 ----
   await page.click('#angleResetAll');
   const allZero = await page.evaluate(() => {
-    const keys = ['rotate', 'roll', 'yaw', 'pitch', 'perspX', 'perspY'];
+    const keys = ['rotate', 'pitch', 'distort'];
     return keys.every((k) => Math.abs(parseFloat(document.querySelector(`.angle-num[data-key="${k}"]`).value)) < 1e-6);
   });
   const zoomOne = await page.inputValue('.angle-num[data-key="zoom"]');
-  allZero && parseFloat(zoomOne) === 1 ? ok('全部复位：参数归默认') : bad('全部复位', `zoom=${zoomOne}`);
+  const fovOne = await page.inputValue('.angle-num[data-key="fov"]');
+  allZero && parseFloat(zoomOne) === 1 && Math.abs(parseFloat(fovOne) - 1.8) < 1e-6
+    ? ok('全部复位：参数归默认')
+    : bad('全部复位', `zoom=${zoomOne} fov=${fovOne}`);
   // 结构比对：复位后应与初始的前景 bbox / 质心一致
   const mReset = await fgMetrics();
   const dReset = Math.abs(mReset.cx - m0.cx) + Math.abs(mReset.cy - m0.cy);
@@ -345,8 +345,8 @@ try {
     : bad('复位后画布结构回到初始', `质心差 ${dReset.toFixed(1)}px / bbox 差 ${dBoxReset}px`);
 
   // ---- 导出参数 JSON ----
-  await page.click('#angleMode button[data-m="roll"]');
-  await page.locator('.angle-range[data-key="roll"]').evaluate((el) => {
+  await page.click('#angleMode button[data-m="pitch"]');
+  await page.locator('.angle-range[data-key="pitch"]').evaluate((el) => {
     el.value = '-7.5';
     el.dispatchEvent(new Event('input', { bubbles: true }));
   });
@@ -356,13 +356,16 @@ try {
   const jsonPath = path.join(OUT, '角度参数.json');
   await d.saveAs(jsonPath);
   const parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-  parsed.params.roll === -7.5 ? ok('导出参数 JSON 内容正确', `roll=${parsed.params.roll}`) : bad('导出 JSON', JSON.stringify(parsed.params));
+  parsed.params.pitch === -7.5 ? ok('导出参数 JSON 内容正确', `pitch=${parsed.params.pitch}`) : bad('导出 JSON', JSON.stringify(parsed.params));
+  // 导出的 JSON 不应再含有已移除的字段
+  const hasRemoved = ['roll', 'yaw', 'perspX', 'perspY'].some((k) => k in parsed.params);
+  !hasRemoved ? ok('导出 JSON 不含已移除字段') : bad('导出 JSON 仍含已移除字段', JSON.stringify(parsed.params));
 
   // ---- 改掉参数，再导入还原 ----
   await page.click('#angleResetAll');
   await page.setInputFiles('#fileJson', jsonPath);
   await page.waitForTimeout(400);
-  const restored = await page.inputValue('.angle-num[data-key="roll"]');
+  const restored = await page.inputValue('.angle-num[data-key="pitch"]');
   Math.abs(parseFloat(restored) + 7.5) < 1e-6 ? ok('导入参数 JSON 还原成功', restored) : bad('导入参数还原', restored);
 
   // ---- 导出下载：单张 PNG ----

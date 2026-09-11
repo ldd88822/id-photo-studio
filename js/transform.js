@@ -49,7 +49,14 @@ function solve8(A, b) {
   return M.map((row) => row[n]);
 }
 
-/** 由 4 组「目标点 → 源点」对应关系求透视矩阵（输出像素 → 源图像素） */
+/**
+ * 由 4 组「目标点 → 源点」对应关系求透视矩阵（输出像素 → 源图像素）。
+ *
+ * 说明：自 v1.2 起，透视校正参数（perspX / perspY）已从产品中移除，
+ * 本函数不再是 `buildMatrix` 的一环，保留它是为了：
+ *   1. 作为通用的四点透视求解工具，后续若做「四角自由拖拽矫正」可直接复用；
+ *   2. 维持单元测试对射影变换性质（对边比不变）的覆盖。
+ */
 export function perspectiveFrom4(dst, src) {
   // dst: 输出画布上的四边形顶点, src: 源图上的对应点
   const A = [];
@@ -86,28 +93,21 @@ export function translate(tx, ty) {
 }
 
 /**
- * 3D 旋转投影矩阵。
- * pitch：绕水平轴（低头/抬头），yaw：绕垂直轴（转头），roll：画面内旋转。
- * 三者都以 deg 传入，作用在归一化坐标（x,y ∈ [-1,1]）。
+ * 3D 旋转投影矩阵（仅俯仰）。
+ * pitch：绕水平轴（低头/抬头），以 deg 传入，作用在归一化坐标（x,y ∈ [-1,1]）。
  */
-export function rotation3D(pitch, yaw, roll, fov) {
+export function rotation3D(pitch, fov) {
   const d = Math.max(0.4, fov); // 相机距离，越小透视越强
   const px = (pitch * Math.PI) / 180;
-  const py = (yaw * Math.PI) / 180;
-  const pz = (roll * Math.PI) / 180;
 
   const cp = Math.cos(px);
   const sp = Math.sin(px);
-  const cy = Math.cos(py);
-  const sy = Math.sin(py);
-  const cz = Math.cos(pz);
-  const sz = Math.sin(pz);
 
-  // R = Rz(roll) · Ry(yaw) · Rx(pitch)
+  // R = Rx(pitch)
   const R = [
-    cz * cy, cz * sy * sp - sz * cp, cz * sy * cp + sz * sp,
-    sz * cy, sz * sy * sp + cz * cp, sz * sy * cp - cz * sp,
-    -sy, cy * sp, cy * cp,
+    1, 0, 0,
+    0, cp, -sp,
+    0, sp, cp,
   ];
 
   // 相机位于 +z 方向、距离 d 处，看向 -z。
@@ -135,7 +135,7 @@ export function distortFactor(k1, dx, dy) {
 
 /**
  * 由参数对象构建「输出像素 → 源图像素」的完整矩阵。
- * params: { rotate, roll, pitch, yaw, perspX, perspY, zoom, distort, fov }
+ * params: { rotate, pitch, zoom, distort, fov }
  * 输出画布尺寸 ow×oh，源图尺寸 sw×sh，可选旋转中心 pivot（像素坐标，默认画布中心）。
  *
  * 关键点：乘法顺序。若 M = A·B，则先施加 B 再施加 A（右结合）。
@@ -177,53 +177,12 @@ export function buildMatrix(params, ow, oh, sw, sh, pivot, view) {
   if (params.rotate) geo = multiply(rotateDeg(params.rotate, cx, cy), geo);
 
   // ③ 3D 旋转（归一化坐标：nx = 2x/w - 1）
-  const has3D = params.pitch || params.yaw || params.roll;
+  const has3D = !!params.pitch;
   if (has3D) {
-    const r3 = rotation3D(params.pitch || 0, params.yaw || 0, params.roll || 0, params.fov || 1.8);
+    const r3 = rotation3D(params.pitch || 0, params.fov || 1.8);
     const toNorm = [2 / w, 0, -1, 0, 2 / h, -1, 0, 0, 1];
     const fromNorm = [w / 2, 0, cx, 0, h / 2, cy, 0, 0, 1];
     geo = multiply(multiply(fromNorm, r3), multiply(toNorm, geo));
-  }
-
-  // ④ 透视校正：输出画布 → 源图上的梯形
-  //    方向语义：perspX > 0 → 视觉「顶边收窄」；perspY > 0 → 视觉「左边收窄」。
-  //
-  //    注意映射方向：矩阵是「输出 → 源图」，srcQuad 描述「输出矩形四角各自到源图哪里取样」。
-  //      · 想让输出顶边**看起来更窄**，就得让输出顶边取源图**更宽**的一段
-  //        （把宽的一段压进窄的顶边 ⇒ 视觉顶部收缩）。
-  //        所以顶边横向系数是 1 + px。
-  //      · 同理，想让输出左边看起来更窄，左边取源图更高的竖向区间，系数 1 + py。
-  //
-  //    四个顶点必须各自独立控制，才能形成真正的梯形：
-  //      · 顶边两点的 x 由 (1+px) 决定（水平收窄）
-  //      · 左边/右边两点的 y 区间由 (1+py) 决定（垂直收窄）
-  //    早期版本把 py 同时加到顶边两点的 y 上，得到的是「顶边整体上移」，
-  //    等价于纵向缩放而非纵向梯形 —— 这是错的。
-  //
-  //    梯形以**画布中心** mx/my 为基准，不受 pivot 影响 ——
-  //    透视是「整幅画面的形状矫正」，与旋转中心无关。
-  const px = params.perspX || 0;
-  const py = params.perspY || 0;
-  if (px || py) {
-    const dst = [
-      { x: 0, y: 0 },
-      { x: w, y: 0 },
-      { x: w, y: h },
-      { x: 0, y: h },
-    ];
-    const halfW = w / 2;
-    const halfH = h / 2;
-    // 顶边横向半宽：px>0 时更宽（视觉顶部收窄）
-    const topHalfW = halfW * (1 + px);
-    // 左边纵向半高：py>0 时更高（视觉左侧收窄）
-    const leftHalfH = halfH * (1 + py);
-    const srcQuad = [
-      { x: mx - topHalfW, y: my - leftHalfH }, // 左上
-      { x: mx + topHalfW, y: my - halfH },     // 右上
-      { x: mx + halfW, y: my + leftHalfH },    // 右下
-      { x: mx - halfW, y: my + halfH },        // 左下
-    ];
-    geo = multiply(perspectiveFrom4(dst, srcQuad), geo);
   }
 
   // ⑤ 缩放（最外层）
@@ -317,11 +276,7 @@ function clampInt(v, a, b) {
 
 export const ANGLE_PARAMS = [
   { key: 'rotate', label: '水平旋转', unit: '°', min: -45, max: 45, step: 0.1, def: 0, hint: '整幅画面左右摆正' },
-  { key: 'roll', label: '倾斜（Roll）', unit: '°', min: -30, max: 30, step: 0.1, def: 0, hint: '绕视线轴倾斜，纠正歪头' },
-  { key: 'yaw', label: '转头（Yaw）', unit: '°', min: -25, max: 25, step: 0.1, def: 0, hint: '绕垂直轴转动，纠正侧脸' },
   { key: 'pitch', label: '俯仰（Pitch）', unit: '°', min: -25, max: 25, step: 0.1, def: 0, hint: '绕水平轴俯仰，纠正仰拍/俯拍' },
-  { key: 'perspX', label: '横向透视', min: -0.4, max: 0.4, step: 0.005, def: 0, hint: '矫正左右梯形变形' },
-  { key: 'perspY', label: '纵向透视', min: -0.4, max: 0.4, step: 0.005, def: 0, hint: '矫正上下梯形变形' },
   { key: 'zoom', label: '画面缩放', min: 0.5, max: 2, step: 0.005, def: 1, hint: '补偿旋转后的留白' },
   { key: 'distort', label: '镜头畸变', min: -0.3, max: 0.3, step: 0.005, def: 0, hint: '桶形 / 枕形畸变校正（整幅后处理）' },
   { key: 'fov', label: '镜头距离', min: 0.8, max: 4, step: 0.05, def: 1.8, hint: '越小透视越强（3D 旋转生效时）' },

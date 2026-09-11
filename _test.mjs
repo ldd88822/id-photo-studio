@@ -49,37 +49,33 @@ console.log('\n[2] 透视矩阵求解');
   t('4 点透视映射精确回代', ok);
 }
 
-console.log('\n[3] 3D 旋转');
+console.log('\n[3] 3D 旋转（仅俯仰）');
 {
   // 无旋转时应为单位阵
-  const R0 = rotation3D(0, 0, 0, 1.8);
+  const R0 = rotation3D(0, 1.8);
   t('零角度 = 单位投影', near(R0[0], 1) && near(R0[4], 1) && near(R0[8], 1));
 
-  // roll 90° 在归一化坐标下 (0,1) 应变为 (-1,0) 或 (1,0) 之一（取决于约定）
-  const Rr = rotation3D(0, 0, 90, 1.8);
-  const a = mulVec(Rr, 1, 0);
-  t('roll 旋转产生位移', Math.abs(a.x - 1) > 0.5 || Math.abs(a.y) > 0.5, `得到 ${a.x.toFixed(3)},${a.y.toFixed(3)}`);
-
-  // yaw 应产生透视：一侧被放大、一侧被缩小（近大远小）
-  const Ry = rotation3D(0, 25, 0, 1.8);
-  const bL = mulVec(Ry, -0.9, 0);
-  const bR = mulVec(Ry, 0.9, 0);
-  t('yaw 产生近大远小（左右不对称）', Math.abs(bL.x) !== Math.abs(bR.x),
-    `左 ${bL.x.toFixed(3)} 右 ${bR.x.toFixed(3)}`);
-  t('yaw 保持中心不动', (() => { const c = mulVec(Ry, 0, 0); return near(c.x, 0, 1e-9) && near(c.y, 0, 1e-9); })());
-
-  // 对称性：yaw +25 与 -25 应镜像
-  const Ry2 = rotation3D(0, -25, 0, 1.8);
-  const cS = mulVec(Ry2, -0.9, 0);
-  const cS2 = mulVec(Ry2, 0.9, 0);
-  t('yaw 正负对称（镜像）', near(bL.x, -cS2.x, 1e-9) && near(bR.x, -cS.x, 1e-9),
-    `+25: ${bL.x.toFixed(3)}/${bR.x.toFixed(3)}  -25: ${cS.x.toFixed(3)}/${cS2.x.toFixed(3)}`);
-
-  // pitch 同理
-  const Rp = rotation3D(20, 0, 0, 1.8);
+  // pitch 应产生近大远小：上下两侧被放大/缩小的程度不同
+  const Rp = rotation3D(20, 1.8);
   const pU = mulVec(Rp, 0, -0.9);
   const pD = mulVec(Rp, 0, 0.9);
   t('pitch 产生上下近大远小', Math.abs(pU.y) !== Math.abs(pD.y), `${pU.y.toFixed(3)} / ${pD.y.toFixed(3)}`);
+
+  // pitch 保持原点不动
+  const c = mulVec(Rp, 0, 0);
+  t('pitch 保持中心不动', near(c.x, 0, 1e-9) && near(c.y, 0, 1e-9));
+
+  // pitch 不应产生左右不对称（水平方向不受俯仰影响）
+  const l = mulVec(Rp, -0.9, 0);
+  const r = mulVec(Rp, 0.9, 0);
+  t('pitch 不产生左右不对称', near(Math.abs(l.x), Math.abs(r.x), 1e-9), `左 ${l.x.toFixed(3)} 右 ${r.x.toFixed(3)}`);
+
+  // 对称性：pitch +20 与 -20 应上下镜像
+  const Rn = rotation3D(-20, 1.8);
+  const pUn = mulVec(Rn, 0, -0.9);
+  const pDn = mulVec(Rn, 0, 0.9);
+  t('pitch 正负对称（上下镜像）', near(pU.y, -pDn.y, 1e-9) && near(pD.y, -pUn.y, 1e-9),
+    `+20: ${pU.y.toFixed(3)}/${pD.y.toFixed(3)}  -20: ${pUn.y.toFixed(3)}/${pDn.y.toFixed(3)}`);
 }
 
 console.log('\n[4] buildMatrix 整合');
@@ -112,12 +108,28 @@ console.log('\n[4] buildMatrix 整合');
   t('rotate 参数生效', diff > 1e-3, `diff=${diff.toFixed(4)}`);
 
   // 各参数单独生效
-  for (const key of ['roll', 'yaw', 'pitch', 'perspX', 'perspY']) {
-    const pp = { ...p0, [key]: key.startsWith('persp') ? 0.2 : 10 };
+  // 注意：distort 是渲染阶段的逐像素径向函数、fov 只在 3D 旋转（pitch≠0）时
+  // 才进入矩阵链，两者都不该在「中性 params」下改变矩阵本身。
+  {
+    const pp = { ...p0, pitch: 10 };
     const Mp = buildMatrix(pp, 295, 413, 1200, 1600);
     let d = 0;
     for (let i = 0; i < 9; i++) d += Math.abs(Mp[i] - M0[i]);
-    t(`${key} 参数生效`, d > 1e-6, `diff=${d.toExponential(2)}`);
+    t('pitch 参数生效', d > 1e-6, `diff=${d.toExponential(2)}`);
+  }
+  {
+    const Mp = buildMatrix({ ...p0, distort: 0.1 }, 295, 413, 1200, 1600);
+    let d = 0;
+    for (let i = 0; i < 9; i++) d += Math.abs(Mp[i] - M0[i]);
+    t('distort 不改变矩阵（走渲染阶段径向函数）', d < 1e-9, `diff=${d.toExponential(2)}`);
+  }
+  {
+    // pitch=0 时 fov 无关；pitch≠0 时 fov 必须改变投影强度
+    const a = buildMatrix({ ...p0, pitch: 15, fov: 1.0 }, 295, 413, 1200, 1600);
+    const b = buildMatrix({ ...p0, pitch: 15, fov: 3.0 }, 295, 413, 1200, 1600);
+    let d = 0;
+    for (let i = 0; i < 9; i++) d += Math.abs(a[i] - b[i]);
+    t('fov 在 3D 旋转生效时改变投影', d > 1e-6, `diff=${d.toExponential(2)}`);
   }
 
   // zoom
@@ -127,46 +139,13 @@ console.log('\n[4] buildMatrix 整合');
   for (let i = 0; i < 9; i++) dz += Math.abs(Mz[i] - M0[i]);
   t('zoom 参数生效', dz > 1e-6);
 
-  // 透视方向语义：perspX > 0 → 顶边取样更宽 → 视觉上顶部收窄
-  {
-    const pw = 295, ph = 413, psw = 900, psh = 1200;
-    const sampleRowWidth = (px, y) => {
-      const M = buildMatrix({ ...p0, perspX: px }, pw, ph, psw, psh);
-      const a = mulVec(M, 0, y);
-      const b = mulVec(M, pw, y);
-      return Math.abs(b.x - a.x);
-    };
-    const topPos = sampleRowWidth(0.2, 0);
-    const topNeg = sampleRowWidth(-0.2, 0);
-    const botPos = sampleRowWidth(0.2, ph);
-    t('perspX>0 时顶边取样宽于底边（视觉顶部收窄）', topPos > botPos, `顶 ${topPos.toFixed(1)} / 底 ${botPos.toFixed(1)}`);
-    t('perspX<0 时顶边取样窄于底边（视觉顶部放大）', topNeg < botPos, `顶 ${topNeg.toFixed(1)} / 底 ${botPos.toFixed(1)}`);
-    t('perspX 正负对称', Math.abs(topPos - botPos - (botPos - topNeg)) < 1e-6, `${topPos.toFixed(1)} / ${topNeg.toFixed(1)}`);
-
-    // 纵向透视：判据不能用「左右两列的 y 跨度对比」——
-    // 射影变换保持对边比，两条对边的跨度恒等，那个指标永远测不出差异。
-    // 正确判据：看左右两侧顶点的 y 是否错开（真正的梯形特征）。
-    const cornerY = (py) => {
-      const M = buildMatrix({ ...p0, perspY: py }, pw, ph, psw, psh);
-      return {
-        leftTop: mulVec(M, 0, 0).y,
-        rightTop: mulVec(M, pw, 0).y,
-        leftBottom: mulVec(M, 0, ph).y,
-        rightBottom: mulVec(M, pw, ph).y,
-      };
-    };
-    const yPos = cornerY(0.2);
-    const yNeg = cornerY(-0.2);
-    const yZero = cornerY(0);
-    t('perspY=0 时左右顶点 y 齐平', Math.abs(yZero.leftTop - yZero.rightTop) < 1e-6, `${yZero.leftTop},${yZero.rightTop}`);
-    t('perspY>0 时左侧顶点纵向外扩（形成梯形）', Math.abs(yPos.leftTop - yPos.rightTop) > 1, `错开 ${Math.abs(yPos.leftTop - yPos.rightTop).toFixed(1)}`);
-    t('perspY<0 时梯形方向相反', (yNeg.leftTop - yNeg.rightTop) * (yPos.leftTop - yPos.rightTop) < 0, `正 ${(yPos.leftTop - yPos.rightTop).toFixed(1)} / 负 ${(yNeg.leftTop - yNeg.rightTop).toFixed(1)}`);
-    t('perspY 不影响水平方向的梯形', Math.abs(yPos.leftTop - yPos.rightTop) > 1);
-
-    // 横向与纵向应互不干扰
-    const mx = buildMatrix({ ...p0, perspX: 0.2 }, pw, ph, psw, psh);
-    const tX = Math.abs(mulVec(mx, 0, 0).y - mulVec(mx, pw, 0).y);
-    t('perspX 不产生纵向梯形', tX < 1e-6, `纵向错开 ${tX.toFixed(3)}`);
+  // 已移除的参数不应再影响矩阵
+  for (const key of ['roll', 'yaw', 'perspX', 'perspY']) {
+    const pp = { ...p0, [key]: key.startsWith('persp') ? 0.3 : 20 };
+    const Mp = buildMatrix(pp, 295, 413, 1200, 1600);
+    let d = 0;
+    for (let i = 0; i < 9; i++) d += Math.abs(Mp[i] - M0[i]);
+    t(`${key} 已移除，不再影响矩阵`, d < 1e-9, `diff=${d.toExponential(2)}`);
   }
 }
 
@@ -181,10 +160,13 @@ console.log('\n[5] 中性判断');
 console.log('\n[6] 参数范围定义完整性');
 {
   const keys = ANGLE_PARAMS.map((p) => p.key);
-  t('包含全部可调参数', keys.length === 9, keys.join(','));
+  t('包含全部可调参数（5 项）', keys.length === 5, keys.join(','));
+  t('已移除 roll / yaw / perspX / perspY',
+    !keys.includes('roll') && !keys.includes('yaw') && !keys.includes('perspX') && !keys.includes('perspY'),
+    keys.join(','));
   t('范围均有效（min<max, step>0）', ANGLE_PARAMS.every((p) => p.min < p.max && p.step > 0 && p.def >= p.min && p.def <= p.max));
   t('水平旋转范围 ±45°', ANGLE_PARAMS.find((p) => p.key === 'rotate').max === 45);
-  t('倾斜/俯仰 ±25~30°', Math.abs(ANGLE_PARAMS.find((p) => p.key === 'roll').max) >= 25);
+  t('俯仰范围 ±25°', ANGLE_PARAMS.find((p) => p.key === 'pitch').max === 25);
   t('fov 默认 1.8 且范围有效', ANGLE_PARAMS.find((p) => p.key === 'fov').def === 1.8);
 }
 

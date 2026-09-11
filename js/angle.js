@@ -14,10 +14,7 @@ const $ = (s, r = document) => r.querySelector(s);
 
 const GROUPS = {
   rotate: ['rotate'],
-  roll: ['roll'],
   pitch: ['pitch'],
-  yaw: ['yaw'],
-  persp: ['perspX', 'perspY'],
 };
 
 export class AngleController {
@@ -472,10 +469,10 @@ export class AngleController {
     if (s) s.textContent = `${st.index + 1} / ${st.size}`;
   }
 
-  /** 水平吸附：rotate / roll 在 ±2° 内归零 */
+  /** 水平吸附：rotate 在 ±2° 内归零 */
   _snap(key, v) {
     if (!this.snapLevel) return v;
-    if ((key === 'rotate' || key === 'roll') && Math.abs(v) <= 2) return 0;
+    if (key === 'rotate' && Math.abs(v) <= 2) return 0;
     return v;
   }
 
@@ -491,7 +488,7 @@ export class AngleController {
    * ±2° 吸附区内会被立刻吸回 0，用户按方向键将永远调不动。
    */
   nudge(dir, factor = 1) {
-    const key = this.mode === 'persp' ? 'perspX' : this.mode;
+    const key = this.mode;
     const def = ANGLE_PARAMS.find((p) => p.key === key);
     if (!def) return false;
     const delta = def.step * factor * dir;
@@ -529,23 +526,13 @@ export class AngleController {
       return true;
     }
 
-    const SENS = { rotate: 42, roll: 52, yaw: 34, pitch: 28, persp: 1.0 };
+    const SENS = { rotate: 42, pitch: 28 };
     switch (this.mode) {
       case 'rotate':
         this.params.rotate = clampv(this.params.rotate + dx * SENS.rotate, -45, 45);
         break;
-      case 'roll':
-        this.params.roll = clampv(this.params.roll + dx * SENS.roll, -30, 30);
-        break;
-      case 'yaw':
-        this.params.yaw = clampv(this.params.yaw + dx * SENS.yaw, -25, 25);
-        break;
       case 'pitch':
         this.params.pitch = clampv(this.params.pitch - dy * SENS.pitch, -25, 25);
-        break;
-      case 'persp':
-        this.params.perspX = clampv(this.params.perspX + dx * SENS.persp, -0.4, 0.4);
-        this.params.perspY = clampv(this.params.perspY - dy * SENS.persp, -0.4, 0.4);
         break;
       default:
         return false;
@@ -563,7 +550,7 @@ export class AngleController {
       this.seal();
       return;
     }
-    this.commit('拖拽' + (labelOf(this.mode === 'persp' ? 'perspX' : this.mode) || ''), false);
+    this.commit('拖拽' + (labelOf(this.mode) || ''), false);
     this.seal();
   }
 }
