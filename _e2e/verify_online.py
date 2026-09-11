@@ -13,6 +13,7 @@ CHECKS = [
     ('js/matting.js', 'setProgressHandler', '进度回调导出'),
     ('js/matting.js', 'probeWasmSpeed', 'wasm 速率探测'),
     ('js/matting.js', 'initPromise = null', '坏 Promise 不缓存'),
+    ('js/matting.js', 'WASM_DECODED_SIZE', 'wasm 解压体积常量'),
     ('js/transform.js', 'mirrorX', '镜像矩阵'),
     ('js/angle.js', 'ANGLE_FLAGS', '布尔开关表'),
     ('js/angle.js', '-90, 90', '拖拽量程钳制 ±90'),
