@@ -59,6 +59,7 @@
 
       <div class="stage-foot">
         <button class="btn ghost sm" id="btnGuide">参考线</button>
+        <button class="btn ghost sm" id="btnAngle">角度</button>
         <div class="zoom">
           <button class="round" id="zoomOut">−</button>
           <input type="range" id="zoom" min="0.3" max="3" step="0.01" value="1" />
@@ -73,6 +74,7 @@
       <div class="tabs">
         <button class="tab on" data-tab="spec">规格</button>
         <button class="tab" data-tab="bg">底色</button>
+        <button class="tab" data-tab="angle">角度</button>
         <button class="tab" data-tab="fix">精修</button>
         <button class="tab" data-tab="out">导出</button>
       </div>
@@ -119,6 +121,59 @@
         <div class="field">
           <label>多底色预览</label>
           <div class="strip" id="strip"></div>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="angle">
+        <div class="field">
+          <label>快捷模式</label>
+          <div class="seg small" id="angleMode">
+            <button data-m="rotate" class="on">画布旋转</button>
+            <button data-m="roll">倾斜纠正</button>
+            <button data-m="yaw">转头纠正</button>
+            <button data-m="pitch">俯仰纠正</button>
+            <button data-m="persp">透视校正</button>
+          </div>
+          <p class="hint" id="angleHint">拖动画布上的圆环手柄可直接旋转。</p>
+        </div>
+
+        <div class="field">
+          <label>旋转中心</label>
+          <div class="seg small" id="pivotMode">
+            <button data-p="center" class="on">画面中心</button>
+            <button data-p="face">人脸中心</button>
+            <button data-p="custom">自定义</button>
+          </div>
+        </div>
+
+        <div id="angleSliders"></div>
+
+        <div class="field">
+          <label>操作</label>
+          <div class="seg small">
+            <button id="angleReset">复位本组</button>
+            <button id="angleResetAll">全部复位</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>历史记录 <b id="histStep">0 / 0</b></label>
+          <div class="seg small" style="margin-bottom:6px">
+            <button id="btnUndo">↶ 撤销</button>
+            <button id="btnRedo">↷ 重做</button>
+          </div>
+          <div class="seg small">
+            <button id="btnResetPhoto">⤺ 回到原图</button>
+            <button id="btnExportJson">⬇ 导出参数</button>
+            <button id="btnImportJson">⬆ 导入参数</button>
+          </div>
+          <input type="file" id="fileJson" accept=".json,application/json" hidden />
+          <p class="hint" id="histHint">— ｜ 可撤销 0 步 / 共 0 步</p>
+        </div>
+
+        <div class="field">
+          <label class="chk"><input type="checkbox" id="gridOn" /><span>显示三分构图网格</span></label>
+          <label class="chk"><input type="checkbox" id="snapLevel" checked /><span>水平自动吸附（±2° 内）</span></label>
         </div>
       </section>
 
@@ -173,6 +228,7 @@
             <button data-f="png" class="on">PNG</button>
             <button data-f="jpg">JPG</button>
           </div>
+          <label class="chk"><input type="checkbox" id="metaOn" checked /><span>在 PNG 中写入制作参数（可回读复原）</span></label>
         </div>
         <button class="btn primary block" id="btnDownload">下载当前照片</button>
 

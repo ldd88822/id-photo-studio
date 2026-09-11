@@ -1,5 +1,6 @@
 import { SPEC_GROUPS, specPx, findSpec, mmToPx, BG_PRESETS, PAPERS } from './specs.js';
 import { initMatting, segment, detectFace, chromaKey, refineAlpha, alphaBBox } from './matting.js';
+import { AngleController } from './angle.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -37,6 +38,8 @@ const S = {
   fname: '证件照',
   group: 0,
   tpl: null,
+  angleOn: false,
+  metaOn: true,
 };
 
 const cvMain = $('#cvMain');
@@ -62,6 +65,10 @@ function curPx() {
   if (S.custom) return { w: mmToPx(S.custom.mmW, S.dpi), h: mmToPx(S.custom.mmH, S.dpi) };
   return specPx(findSpec(S.specId), S.dpi);
 }
+
+// 暴露状态与关键函数，供自动化测试 / 控制台调试使用（只读用途，不参与业务逻辑）
+window.__S = S;
+window.__api = { curPx, curSpecName, exportCanvas, buildMeta, paintTo, findSpec };
 
 function curSpecName() {
   return S.custom ? `自定义 ${S.custom.mmW}×${S.custom.mmH}mm` : findSpec(S.specId).name;
@@ -141,6 +148,7 @@ async function useImage(src) {
   hideLoading();
   autoFit();
   setStep(3);
+  if (angle) angle.initHistory();
   checkBlank();
 }
 
@@ -252,6 +260,7 @@ function buildMask() {
 }
 
 /* ============ 渲染 ============ */
+let angle = null; // AngleController，在启动时初始化
 function tfRect(p) {
   const k = Math.max(p.w / S.W, p.h / S.H);
   const sc = k * S.tf.scale;
@@ -279,7 +288,8 @@ function paintTo(ctx, w, h, opt = {}) {
     if (S.bri !== 100 || S.con !== 100) ctx.filter = `brightness(${S.bri}%) contrast(${S.con}%)`;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(S.maskCanvas, t.dx, t.dy, t.dw, t.dh);
+    const handled = angle && angle.isEnabled() && angle.renderForeground(ctx, w, h);
+    if (!handled) ctx.drawImage(S.maskCanvas, t.dx, t.dy, t.dw, t.dh);
   }
   ctx.restore();
 }
@@ -289,7 +299,7 @@ function render() {
   const p = curPx();
   cvMain.width = p.w;
   cvMain.height = p.h;
-  paintTo(cvMain.getContext('2d'), p.w, p.h);
+  paintTo(cvMain.getContext('2d', { willReadFrequently: true }), p.w, p.h);
   fitPhoto();
   drawGuides(p);
   renderStrip();
@@ -318,32 +328,113 @@ function drawGuides(p) {
   const ctx = cvGuide.getContext('2d');
   ctx.clearRect(0, 0, p.w, p.h);
   drawTemplate(p);
-  if (!S.guides) return;
-  const lw = Math.max(1, p.w / 380);
-  ctx.lineWidth = lw;
-  ctx.setLineDash([p.w * 0.025, p.w * 0.018]);
-  ctx.strokeStyle = 'rgba(255,255,255,.75)';
-  const hline = (y) => {
+  if (S.guides) {
+    const lw = Math.max(1, p.w / 380);
+    ctx.lineWidth = lw;
+    ctx.setLineDash([p.w * 0.025, p.w * 0.018]);
+    ctx.strokeStyle = 'rgba(255,255,255,.75)';
+    const hline = (y) => {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(p.w, y);
+      ctx.stroke();
+    };
+    hline(p.h * HEAD_TOP_RATIO);
+    hline(p.h * (HEAD_TOP_RATIO + HEAD_H_RATIO));
+    ctx.strokeStyle = 'rgba(255,255,255,.35)';
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(p.w, y);
+    ctx.moveTo(p.w / 2, 0);
+    ctx.lineTo(p.w / 2, p.h);
     ctx.stroke();
-  };
-  hline(p.h * HEAD_TOP_RATIO);
-  hline(p.h * (HEAD_TOP_RATIO + HEAD_H_RATIO));
-  ctx.strokeStyle = 'rgba(255,255,255,.35)';
-  ctx.beginPath();
-  ctx.moveTo(p.w / 2, 0);
-  ctx.lineTo(p.w / 2, p.h);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.strokeStyle = 'rgba(255,255,255,.22)';
-  ctx.strokeRect(p.w * 0.05, p.h * 0.02, p.w * 0.9, p.h * 0.96);
-  const fs = Math.max(7, Math.round(p.w * 0.045));
-  ctx.font = `${fs}px sans-serif`;
-  ctx.fillStyle = 'rgba(255,255,255,.7)';
-  ctx.fillText('头顶', p.w * 0.03, p.h * HEAD_TOP_RATIO - p.h * 0.012);
-  ctx.fillText('下巴', p.w * 0.03, p.h * (HEAD_TOP_RATIO + HEAD_H_RATIO) - p.h * 0.012);
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,.22)';
+    ctx.strokeRect(p.w * 0.05, p.h * 0.02, p.w * 0.9, p.h * 0.96);
+    const fs = Math.max(7, Math.round(p.w * 0.045));
+    ctx.font = `${fs}px sans-serif`;
+    ctx.fillStyle = 'rgba(255,255,255,.7)';
+    ctx.fillText('头顶', p.w * 0.03, p.h * HEAD_TOP_RATIO - p.h * 0.012);
+    ctx.fillText('下巴', p.w * 0.03, p.h * (HEAD_TOP_RATIO + HEAD_H_RATIO) - p.h * 0.012);
+  }
+  // 角度叠层（网格 + 旋转中心标记）必须**无条件**绘制：
+  // 早期版本写成「if (!S.guides) { drawAngleOverlay(); return; }」，
+  // 导致构图辅助线一开启，角度网格与轴心标记就整个消失。
+  drawAngleOverlay(p);
+}
+
+/* 三分构图网格 + 旋转手柄 */
+function drawAngleOverlay(p) {
+  if (!angle || !angle.isEnabled()) return;
+  const ctx = cvGuide.getContext('2d');
+  if (angle.grid) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(120,190,255,.55)';
+    ctx.lineWidth = Math.max(1, p.w / 600);
+    for (let i = 1; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo((p.w * i) / 3, 0);
+      ctx.lineTo((p.w * i) / 3, p.h);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, (p.h * i) / 3);
+      ctx.lineTo(p.w, (p.h * i) / 3);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  // 旋转中心标记
+  if (angle.pivot !== 'center') {
+    const c = pivotPoint(p);
+    // 标记尺寸要够醒目：早期版本按 p.w * 0.03 取半径，
+    // 在小尺寸画布（如 295px 宽的一寸照）上只有 9px，实际几乎看不见。
+    const R = Math.max(10, p.w * 0.075);
+    const arm = R * 1.55;
+    const lw = Math.max(2, p.w / 160);
+    ctx.save();
+    // 外圈加一层深色描边，保证在浅色背景上也能看清
+    ctx.strokeStyle = 'rgba(0,0,0,.45)';
+    ctx.lineWidth = lw + 2;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(c.x - arm, c.y);
+    ctx.lineTo(c.x + arm, c.y);
+    ctx.moveTo(c.x, c.y - arm);
+    ctx.lineTo(c.x, c.y + arm);
+    ctx.stroke();
+    // 亮色主体
+    ctx.strokeStyle = 'rgba(255,190,60,.95)';
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(c.x - arm, c.y);
+    ctx.lineTo(c.x + arm, c.y);
+    ctx.moveTo(c.x, c.y - arm);
+    ctx.lineTo(c.x, c.y + arm);
+    ctx.stroke();
+    // 中心点
+    ctx.fillStyle = 'rgba(255,190,60,.95)';
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, Math.max(2, R * 0.18), 0, Math.PI * 2);
+    ctx.fill();
+    // 提示文字（仅在画布够大时显示，避免小图上糊成一片）
+    if (p.w >= 220) {
+      const fs = Math.max(9, Math.round(p.w * 0.042));
+      ctx.font = `600 ${fs}px sans-serif`;
+      ctx.fillStyle = 'rgba(0,0,0,.5)';
+      ctx.fillText('旋转中心', c.x + arm + 3, c.y + fs * 0.35 + 1);
+      ctx.fillStyle = 'rgba(255,190,60,.95)';
+      ctx.fillText('旋转中心', c.x + arm + 2, c.y + fs * 0.35);
+    }
+    ctx.restore();
+  }
+}
+
+function pivotPoint(p) {
+  if (angle) return angle.pivotPixel(p.w, p.h);
+  return { x: p.w / 2, y: p.h / 2 };
 }
 
 /* ============ 参考底图（定位模板） ============ */
@@ -494,6 +585,13 @@ photo.addEventListener('pointerdown', (e) => {
     last = pointers.get(e.pointerId);
     paintBrush(last.sx, last.sy, S.brush);
     scheduleRebuild();
+  } else if (angle && angle.isEnabled()) {
+    mode = 'angle';
+    last = { px: e.clientX, py: e.clientY };
+    const lp = pointers.get(e.pointerId);
+    // 只有在「自定义轴心」且用户按在轴心标记附近时才移动轴心；
+    // 否则普通拖拽一律视为旋转，不因一次旋转就悄悄改掉轴心位置。
+    angle.movingPivot = angle.pivot === 'custom' && angle.hitPivot(lp.px, lp.py, p.w);
   } else {
     mode = 'pan';
     last = { px: e.clientX, py: e.clientY };
@@ -522,6 +620,14 @@ photo.addEventListener('pointermove', (e) => {
     scheduleRebuild();
     return;
   }
+  if (mode === 'angle') {
+    const r = photo.getBoundingClientRect();
+    const dx = (e.clientX - last.px) / r.width;
+    const dy = (e.clientY - last.py) / r.height;
+    last = { px: e.clientX, py: e.clientY };
+    angle.drag(dx, dy, { px: cur.px, py: cur.py, ow: p.w, oh: p.h });
+    return;
+  }
   if (mode === 'pan') {
     const r = photo.getBoundingClientRect();
     const dxPhoto = ((e.clientX - last.px) / r.width) * p.w;
@@ -538,6 +644,7 @@ function endPointer(e) {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   if (pointers.size === 0) {
+    if (mode === 'angle' && angle) angle.endDrag();
     mode = null;
     last = null;
     if (paintDirty) {
@@ -575,7 +682,12 @@ function exportCanvas(bgOverride) {
   const c = document.createElement('canvas');
   c.width = p.w;
   c.height = p.h;
-  paintTo(c.getContext('2d'), p.w, p.h, bgOverride ? { bg: bgOverride } : {});
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  paintTo(ctx, p.w, p.h, bgOverride ? { bg: bgOverride } : {});
+  // 镜头畸变后处理（仅在前景变换启用时生效）
+  if (angle && angle.isEnabled() && !angle.isNeutral() && angle.params.distort) {
+    angle.applyDistort(ctx, p.w, p.h);
+  }
   return c;
 }
 
@@ -584,18 +696,99 @@ function download(canvas, name, fmt) {
   const type = isJpg ? 'image/jpeg' : 'image/png';
   canvas.toBlob(
     (blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name + (isJpg ? '.jpg' : '.png');
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      const finish = (b) => {
+        const url = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name + (isJpg ? '.jpg' : '.png');
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      };
+      if (!isJpg && S.metaOn) {
+        embedMeta(blob, buildMeta()).then(finish).catch(() => finish(blob));
+      } else {
+        finish(blob);
+      }
     },
     type,
     0.95
   );
+}
+
+/* ---------- PNG 参数元数据（tEXt 块） ---------- */
+
+/** 汇总当前制作参数，供写入 PNG / 导出 JSON */
+function buildMeta() {
+  const p = curPx();
+  const meta = {
+    app: 'id-photo-studio',
+    kind: 'id-photo-meta',
+    version: 1,
+    savedAt: new Date().toISOString(),
+    spec: { id: S.custom ? 'custom' : S.specId, name: curSpecName(), mmW: S.custom ? S.custom.mmW : findSpec(S.specId).mmW, mmH: S.custom ? S.custom.mmH : findSpec(S.specId).mmH, dpi: S.dpi },
+    output: { w: p.w, h: p.h },
+    background: S.transparent ? { transparent: true } : { c1: S.bg.c1, c2: S.bg.c2, grad: !!S.bg.grad },
+    tone: { brightness: S.bri, contrast: S.con },
+    transform: { nx: S.tf.nx, ny: S.tf.ny, scale: S.tf.scale },
+    angle: angle ? { enabled: !!angle.isEnabled(), params: angle.getParams(), pivot: angle.pivot } : null,
+  };
+  return meta;
+}
+
+function crc32(u8) {
+  let c;
+  const table = crc32.table || (crc32.table = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })());
+  let crc = 0xffffffff;
+  for (let i = 0; i < u8.length; i++) crc = table[(crc ^ u8[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const len = data.length;
+  const buf = new Uint8Array(12 + len);
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(0, len);
+  for (let i = 0; i < 4; i++) buf[4 + i] = type.charCodeAt(i);
+  buf.set(data, 8);
+  const crcInput = buf.subarray(4, 8 + len);
+  dv.setUint32(8 + len, crc32(crcInput));
+  return buf;
+}
+
+/** 把 JSON 元数据作为 tEXt 块插入 PNG，返回新的 Blob */
+async function embedMeta(blob, meta) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i++) if (buf[i] !== sig[i]) throw new Error('not png');
+  // 在 IHDR 之后插入 tEXt
+  let off = 8;
+  const chunks = [];
+  while (off < buf.length) {
+    const dv = new DataView(buf.buffer, buf.byteOffset + off);
+    const len = dv.getUint32(0);
+    const total = 12 + len;
+    chunks.push(buf.subarray(off, off + total));
+    off += total;
+    const t = String.fromCharCode(buf[off - total + 4], buf[off - total + 5], buf[off - total + 6], buf[off - total + 7]);
+    if (t === 'IHDR') break;
+  }
+  const keyword = 'Software';
+  const json = JSON.stringify(meta);
+  const text = keyword + '\0' + 'IDPhotoStudio\0' + json;
+  const enc = new TextEncoder().encode(text);
+  const head = new Uint8Array(8).map((_, i) => sig[i]);
+  const parts = [head, ...chunks, pngChunk('tEXt', enc), buf.subarray(off)];
+  return new Blob(parts, { type: 'image/png' });
 }
 
 function buildSheet() {
@@ -1004,6 +1197,21 @@ function bind() {
     render();
   };
 
+  // 角度模式开关
+  $('#btnAngle').onclick = (e) => {
+    if (!angle) return;
+    angle.enabled = !angle.enabled;
+    e.currentTarget.classList.toggle('primary', angle.enabled);
+    e.currentTarget.textContent = angle.enabled ? '角度 ✓' : '角度';
+    // 切到角度面板
+    if (angle.enabled) {
+      $$('.tab').forEach((x) => x.classList.toggle('on', x.dataset.tab === 'angle'));
+      $$('.pane').forEach((x) => x.classList.toggle('on', x.dataset.pane === 'angle'));
+    }
+    render();
+    toast(angle.enabled ? '已开启角度模式：直接拖动画布即可旋转' : '已关闭角度模式');
+  };
+
   // 导出
   $('#fname').oninput = (e) => {
     S.fname = e.target.value.trim() || '证件照';
@@ -1013,6 +1221,9 @@ function bind() {
     if (!b) return;
     S.fmt = b.dataset.f;
     $$('#fmt button').forEach((x) => x.classList.toggle('on', x === b));
+  };
+  $('#metaOn').onchange = (e) => {
+    S.metaOn = e.target.checked;
   };
   $('#paper').onclick = (e) => {
     const b = e.target.closest('button[data-p]');
@@ -1036,6 +1247,7 @@ function bind() {
     if (!S.img) return;
     const r = buildSheet();
     download(r.canvas, `${S.fname}_${PAPERS[S.paper].name}_${r.total}张`, 'jpg');
+    setStep(5);
     toast(`排版完成：${r.total} 张（${r.cols}×${r.rows}）`);
   };
   $('#btnBatch').onclick = async () => {
@@ -1116,6 +1328,24 @@ async function shot() {
 }
 
 /* ============ 启动 ============ */
+angle = new AngleController({
+  getState: () => S,
+  getOutputSize: () => curPx(),
+  onChange: () => {
+    // 角度变化只需要重绘主画布，无需重建遮罩
+    if (S.img) {
+      const p = curPx();
+      cvMain.width = p.w;
+      cvMain.height = p.h;
+      paintTo(cvMain.getContext('2d', { willReadFrequently: true }), p.w, p.h);
+      drawGuides(p);
+    }
+  },
+  toast,
+});
+// 角度模式默认关闭，保持原有平移/缩放手感
+angle.enabled = false;
+
 renderSpecGroups();
 renderSpecList();
 renderBg();
