@@ -130,9 +130,11 @@ export class AngleController {
    */
   renderForeground(ctx, ow, oh) {
     const st = this.deps.getState();
-    if (!st.maskCanvas) return false;
+    // 优先用已烘焙亮度/对比度的画布：本函数走 putImageData，ctx.filter 在此无效
+    const src = st.enhanced || st.maskCanvas;
+    if (!src) return false;
     const m = this.matrix();
-    renderTransformed(ctx, st.maskCanvas, m, ow, oh);
+    renderTransformed(ctx, src, m, ow, oh);
     return true;
   }
 

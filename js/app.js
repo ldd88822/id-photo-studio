@@ -17,6 +17,11 @@ const S = {
   manual: null,
   alpha: null,
   maskCanvas: null,
+  // 已应用亮度/对比度的源画布。角度模式走手写逐像素采样（putImageData），
+  // 而 ctx.filter 对 putImageData 无效，所以调色必须预先烘焙进像素，
+  // 否则一开角度滤镜就整段丢失（表现为照片发灰、变糊）。
+  enhanced: null,
+  enhancedCanvas: null,
   face: null,
   bbox: null,
   specId: SPEC_GROUPS[0].items[0].id,
@@ -348,6 +353,36 @@ function buildMask() {
   const a = S.alpha;
   for (let i = 0, p = 0; i < a.length; i++, p += 4) d[p + 3] = a[i] * 255;
   ctx.putImageData(id, 0, 0);
+  buildEnhanced();
+}
+
+/**
+ * 把亮度/对比度烘焙进源画布像素，供两条渲染路径共用：
+ *   - 未开角度：drawImage(S.enhanced, ...)
+ *   - 开角度：  renderTransformed(..., S.enhanced, ...) 逐像素采样
+ * 参数为默认值时直接复用 maskCanvas，省一次拷贝。
+ */
+function buildEnhanced() {
+  if (!S.maskCanvas) {
+    S.enhanced = null;
+    return;
+  }
+  if (S.bri === 100 && S.con === 100) {
+    S.enhanced = S.maskCanvas;
+    return;
+  }
+  if (!S.enhancedCanvas) S.enhancedCanvas = document.createElement('canvas');
+  if (S.enhancedCanvas.width !== S.W || S.enhancedCanvas.height !== S.H) {
+    S.enhancedCanvas.width = S.W;
+    S.enhancedCanvas.height = S.H;
+  }
+  const c = S.enhancedCanvas.getContext('2d');
+  c.clearRect(0, 0, S.W, S.H);
+  // filter 只对绘制操作生效，这里作用于 drawImage，结果落在像素上
+  c.filter = `brightness(${S.bri}%) contrast(${S.con}%)`;
+  c.drawImage(S.maskCanvas, 0, 0);
+  c.filter = 'none';
+  S.enhanced = S.enhancedCanvas;
 }
 
 /* ============ 渲染 ============ */
@@ -376,11 +411,13 @@ function paintTo(ctx, w, h, opt = {}) {
   }
   if (S.maskCanvas) {
     const t = tfRect({ w, h });
-    if (S.bri !== 100 || S.con !== 100) ctx.filter = `brightness(${S.bri}%) contrast(${S.con}%)`;
+    // 亮度/对比度已烘焙进 S.enhanced，这里不再设 ctx.filter ——
+    // 滤镜对角度路径的 putImageData 无效，统一走预烘焙才不会两条路径表现不一致。
+    const src = S.enhanced || S.maskCanvas;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     const handled = angle && angle.isEnabled() && angle.renderForeground(ctx, w, h);
-    if (!handled) ctx.drawImage(S.maskCanvas, t.dx, t.dy, t.dw, t.dh);
+    if (!handled) ctx.drawImage(src, t.dx, t.dy, t.dw, t.dh);
   }
   ctx.restore();
 }
@@ -1083,6 +1120,8 @@ function bind() {
     S.baseAlpha = null;
     S.manual = null;
     S.maskCanvas = null;
+    S.enhanced = null;
+    S.enhancedCanvas = null;
     S.custom = null;
     $('#ws').classList.add('hidden');
     $('#drop').classList.remove('hidden');
@@ -1205,11 +1244,13 @@ function bind() {
   $('#bri').oninput = (e) => {
     S.bri = +e.target.value;
     $('#vBri').textContent = S.bri;
+    buildEnhanced(); // 必须重烘焙：角度路径的 putImageData 不认 ctx.filter
     render();
   };
   $('#con').oninput = (e) => {
     S.con = +e.target.value;
     $('#vCon').textContent = S.con;
+    buildEnhanced();
     render();
   };
   $('#brush').oninput = (e) => {

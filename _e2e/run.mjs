@@ -606,6 +606,77 @@ try {
   });
   noStaleCache ? ok('重复调用 initMatting 结果一致（无坏缓存）') : bad('initMatting 缓存异常');
 
+  // ---- 调色 × 角度：滤镜不得因切换到角度路径而丢失 ----
+  // 回归背景：角度渲染走 renderTransformed（putImageData），而 ctx.filter 对
+  // putImageData 无效。早期实现靠 ctx.filter 做亮度/对比度，一开角度滤镜就整段
+  // 丢失，照片发灰「变糊」。现改为预烘焙进源画布，两条路径共用。
+  const sdOf = () =>
+    page.evaluate(() => {
+      const cv = document.querySelector('#cvMain');
+      const c = cv.getContext('2d', { willReadFrequently: true });
+      const d = c.getImageData(0, 0, cv.width, cv.height).data;
+      let n = 0;
+      let s = 0;
+      let s2 = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 250) continue;
+        const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        s += y;
+        s2 += y * y;
+        n++;
+      }
+      if (!n) return null;
+      const m = s / n;
+      return +Math.sqrt(s2 / n - m * m).toFixed(2);
+    });
+
+  // 先把角度参数复位，避免上一段用例的旋转干扰
+  await page.evaluate(() => document.querySelector('#angleResetAll')?.click());
+  await page.waitForTimeout(300);
+  const sdNeutral = await sdOf();
+
+  await page.click('.tab[data-tab="fix"]');
+  await page.evaluate(() => {
+    const el = document.querySelector('#con');
+    el.value = '140';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(400);
+  const sdEnhanced = await sdOf();
+  sdEnhanced > sdNeutral
+    ? ok('提高对比度后画面反差增大', `sd ${sdNeutral} → ${sdEnhanced}`)
+    : bad('对比度未生效', `sd ${sdNeutral} → ${sdEnhanced}`);
+
+  // 开启角度模式（走 renderTransformed 路径）
+  await page.evaluate(() => document.querySelector('#btnAngle')?.click());
+  await page.waitForTimeout(500);
+  const sdAngleOn = await sdOf();
+  const drop = +(((sdEnhanced - sdAngleOn) / sdEnhanced) * 100).toFixed(1);
+  Math.abs(drop) < 2
+    ? ok('开启角度后对比度不丢失', `sd ${sdEnhanced} → ${sdAngleOn}（差 ${drop}%）`)
+    : bad('开启角度后对比度丢失', `sd ${sdEnhanced} → ${sdAngleOn}（降 ${drop}%）`);
+
+  // 旋转后同样不应丢（先切回角度 tab，否则数值输入框不可见）
+  await page.click('.tab[data-tab="angle"]');
+  await page.waitForTimeout(300);
+  await page.locator('.angle-num[data-key="rotate"]').fill('20');
+  await page.locator('.angle-num[data-key="rotate"]').press('Enter');
+  await page.waitForTimeout(600);
+  const sdRotated = await sdOf();
+  const drop2 = +(((sdEnhanced - sdRotated) / sdEnhanced) * 100).toFixed(1);
+  Math.abs(drop2) < 3
+    ? ok('旋转 20° 后对比度仍保持', `sd ${sdRotated}（差 ${drop2}%）`)
+    : bad('旋转后对比度丢失', `sd ${sdEnhanced} → ${sdRotated}（降 ${drop2}%）`);
+
+  // 复位：关闭角度 + 恢复对比度，避免影响后续用例
+  await page.evaluate(() => {
+    document.querySelector('#btnAngle')?.click();
+    const el = document.querySelector('#con');
+    el.value = '100';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(400);
+
   // ---- 手机视口 ----
   await page.setViewportSize({ width: 390, height: 844 });
   await page.click('.tab[data-tab="angle"]');
