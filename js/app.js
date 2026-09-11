@@ -1,5 +1,5 @@
 import { SPEC_GROUPS, specPx, findSpec, mmToPx, BG_PRESETS, PAPERS } from './specs.js';
-import { initMatting, segment, detectFace, chromaKey, refineAlpha, alphaBBox } from './matting.js';
+import { initMatting, segment, detectFace, chromaKey, refineAlpha, alphaBBox, setProgressHandler, initError, hasSegmenter } from './matting.js';
 import { AngleController } from './angle.js';
 
 const $ = (s) => document.querySelector(s);
@@ -107,12 +107,13 @@ function loadImageFromFile(file) {
 }
 
 /* ============ 抠图主流程 ============ */
-async function useImage(src) {
+async function useImage(src, opts) {
+  const retrying = !!(opts && opts.retrying);
   setStep(2);
   $('#drop').classList.add('hidden');
   $('#ws').classList.remove('hidden');
   $('#btnNew').hidden = false;
-  showLoading('正在准备模型…');
+  showLoading(retrying ? '模型已就绪，正在重新抠图…' : '正在准备模型…');
   await raf();
   await sleep(30);
 
@@ -128,6 +129,8 @@ async function useImage(src) {
   } catch (e) {
     console.warn(e);
   }
+  // 回填失败态（initMatting 内部已捕获，不抛）
+  if (initError()) showModelFailed();
 
   setLoading('正在识别人像…');
   await raf();
@@ -152,8 +155,96 @@ async function useImage(src) {
   checkBlank();
 }
 
+/* ============ 模型加载反馈（进度 / 超时 / 重试） ============ */
+let modelTimer = null;
+let modelStalled = false;
+
+function bindModelProgress() {
+  setProgressHandler((phase, d) => {
+    if (phase === 'loading-bundle') {
+      setLoading('正在加载模型引擎…');
+    } else if (phase === 'download') {
+      // 弱网下 wasm 需数十秒到数分钟，给出真实百分比与速率
+      modelStalled = false;
+      clearTimeout(modelTimer);
+      const mb = (d.got / 1048576).toFixed(1);
+      const tot = (d.total / 1048576).toFixed(1);
+      const rate = d.kbps ? ` · ${d.kbps} KB/s` : '';
+      setLoading(`正在下载模型 ${d.pct}%（${mb}/${tot} MB${rate}）`);
+      armStallWatch();
+    } else if (phase === 'download-failed') {
+      setLoading('模型下载中断，正在重试…');
+    } else if (phase === 'parsing') {
+      clearTimeout(modelTimer);
+      setLoading('正在解析模型…');
+    } else if (phase === 'ready') {
+      clearTimeout(modelTimer);
+    }
+  });
+}
+
+/** 8 秒内进度无变化则提示网络慢，避免被误判为卡死 */
+function armStallWatch() {
+  clearTimeout(modelTimer);
+  modelTimer = setTimeout(() => {
+    modelStalled = true;
+    $('#loadTxt').innerHTML =
+      $('#loadTxt').textContent + '<br><span style="font-size:12px;opacity:.75">网络较慢，请耐心等待，勿关闭页面</span>';
+  }, 8000);
+}
+
+/** 模型不可用：给出明确原因 + 人工重试入口 */
+function showModelFailed() {
+  clearTimeout(modelTimer);
+  const box = $('#loading');
+  if (!box) return;
+  const btn = $('#loadRetry');
+  if (btn) btn.hidden = false;
+  setLoading('模型加载失败，可重试或直接使用纯色抠图');
+}
+
+function bindModelRetry() {
+  const btn = $('#loadRetry');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.hidden = true;
+    showLoading('正在重试…');
+    let okFlag = false;
+    try {
+      const r = await initMatting(true);
+      okFlag = !!(r && r.ok);
+    } catch (e) {
+      console.warn(e);
+      okFlag = false;
+    }
+    // 无论成功与否，都不能把用户永久锁在遮罩里
+    if (!initError() && (okFlag || hasSegmenter())) {
+      toast('模型已就绪');
+      const inp = $('#file');
+      if (inp && inp.files && inp.files[0]) {
+        // 有原图就重跑一遍完整流程（会自己管理遮罩）
+        try {
+          await useImage(await loadImage(inp.files[0]), { retrying: true });
+          return;
+        } catch (e) {
+          console.warn(e);
+        }
+      }
+      hideLoading();
+    } else if (S.img && S.baseAlpha) {
+      // 模型仍不可用但已有抠图结果：关掉遮罩，用户继续手工修边即可
+      hideLoading();
+      toast('模型仍不可用，可先用「纯色背景抠图」或手工修边');
+    } else {
+      showModelFailed();
+    }
+  });
+}
+
 function showLoading(txt) {
   $('#loading').classList.remove('hidden');
+  const btn = $('#loadRetry');
+  if (btn) btn.hidden = true;
   setLoading(txt);
 }
 function setLoading(txt) {
@@ -1358,5 +1449,7 @@ renderStrip();
 updateHints();
 
 // 预加载模型，缩短首次抠图等待
+bindModelProgress();
+bindModelRetry();
 if (window.requestIdleCallback) window.requestIdleCallback(() => initMatting().catch(() => {}));
 else setTimeout(() => initMatting().catch(() => {}), 800);

@@ -1,6 +1,6 @@
 import {
-  identity, multiply, mulVec, perspectiveFrom4, rotateDeg, scaleXY, translate,
-  rotation3D, buildMatrix, isIdentityMatrix, defaultParams, isNeutral, ANGLE_PARAMS,
+  identity, multiply, mulVec, perspectiveFrom4, rotateDeg, scaleXY, translate, mirrorX,
+  rotation3D, buildMatrix, isIdentityMatrix, defaultParams, isNeutral, ANGLE_PARAMS, ANGLE_FLAGS,
 } from './js/transform.js';
 import { History } from './js/history.js';
 
@@ -165,7 +165,7 @@ console.log('\n[6] 参数范围定义完整性');
     !keys.includes('roll') && !keys.includes('yaw') && !keys.includes('perspX') && !keys.includes('perspY'),
     keys.join(','));
   t('范围均有效（min<max, step>0）', ANGLE_PARAMS.every((p) => p.min < p.max && p.step > 0 && p.def >= p.min && p.def <= p.max));
-  t('水平旋转范围 ±45°', ANGLE_PARAMS.find((p) => p.key === 'rotate').max === 45);
+  t('自由旋转范围 ±90°', ANGLE_PARAMS.find((p) => p.key === 'rotate').max === 90 && ANGLE_PARAMS.find((p) => p.key === 'rotate').min === -90);
   t('俯仰范围 ±25°', ANGLE_PARAMS.find((p) => p.key === 'pitch').max === 25);
   t('fov 默认 1.8 且范围有效', ANGLE_PARAMS.find((p) => p.key === 'fov').def === 1.8);
 }
@@ -184,6 +184,56 @@ console.log('\n[6b] 旋转中心（pivot）');
   // pivot 不影响恒等变换
   const mI = buildMatrix(P, 200, 300, 200, 300, { x: 33, y: 77 });
   t('pivot 在恒等参数下仍为恒等', isIdentityMatrix(mI));
+}
+
+console.log('\n[6d] 镜像（左右翻转）');
+{
+  const P = defaultParams();
+  const ow = 200, oh = 300;
+
+  // 默认未开启
+  t('默认 mirror = false', P.mirror === false);
+  t('默认参数判定为中性（含 mirror=false）', isNeutral(P));
+  t('mirror=true 时非中性', !isNeutral({ ...P, mirror: true }));
+
+  // 镜像矩阵本身：沿过画布中心的竖直线翻面，x → ow - x，y 不变
+  const m = mirrorX(ow / 2);
+  const a = mulVec(m, 0, 50);
+  const b = mulVec(m, ow, 50);
+  t('镜像把左边界映射到右边界', near(a.x, ow, 1e-9) && near(b.x, 0, 1e-9), `${a.x}, ${b.x}`);
+  t('镜像不改变 y', near(a.y, 50, 1e-9) && near(b.y, 50, 1e-9));
+  // 中心点不动
+  const c = mulVec(m, ow / 2, oh / 2);
+  t('镜像保持画布中心不动', near(c.x, ow / 2, 1e-9) && near(c.y, oh / 2, 1e-9));
+  // 对合性：翻转两次 = 恒等
+  const m2 = multiply(m, m);
+  t('镜像是对合的（翻两次回到原位）', isIdentityMatrix(m2));
+
+  // buildMatrix 中的行为
+  const M0 = buildMatrix(P, ow, oh, ow, oh);
+  const Mm = buildMatrix({ ...P, mirror: true }, ow, oh, ow, oh);
+  let d = 0;
+  for (let i = 0; i < 9; i++) d += Math.abs(Mm[i] - M0[i]);
+  t('mirror 参数生效（矩阵改变）', d > 1e-6, `diff=${d.toFixed(3)}`);
+
+  // 镜像「先于」旋转：先翻照片再转，而不是转完再翻
+  //
+  //   验证方法：取一个左右不对称的点。在「先镜像后旋转」语义下，
+  //   输出左上角(0,0) 取样到的源点，应该等于「未镜像时输出右上角(ow,0)」取样点的镜像位置。
+  const Mrot = buildMatrix({ ...P, rotate: 30 }, ow, oh, ow, oh);
+  const MrotM = buildMatrix({ ...P, rotate: 30, mirror: true }, ow, oh, ow, oh);
+  const pTL_rot = mulVec(Mrot, 0, 0);
+  const pTR_rotM = mulVec(MrotM, ow, 0);
+  t('镜像先于旋转生效（左上↔右上取样对应）',
+    Math.abs(pTL_rot.x - pTR_rotM.x) < 1e-6 && Math.abs(pTL_rot.y - pTR_rotM.y) < 1e-6,
+    `未镜像左上 ${pTL_rot.x.toFixed(2)},${pTL_rot.y.toFixed(2)} / 镜像后右上 ${pTR_rotM.x.toFixed(2)},${pTR_rotM.y.toFixed(2)}`);
+
+  // 镜像不应受 pivot 影响（它翻的是照片本身，轴向恒定在画布中心）
+  const Mp1 = buildMatrix({ ...P, mirror: true }, ow, oh, ow, oh, { x: 0, y: 0 });
+  const Mp2 = buildMatrix({ ...P, mirror: true }, ow, oh, ow, oh, { x: ow, y: oh });
+  let dp = 0;
+  for (let i = 0; i < 9; i++) dp += Math.abs(Mp1[i] - Mp2[i]);
+  t('镜像轴向不受旋转中心影响', dp < 1e-9, `diff=${dp.toExponential(2)}`);
 }
 
 console.log('\n[6c] 构图状态（view）参与基准映射');

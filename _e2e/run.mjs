@@ -8,7 +8,7 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const OUT = path.join(ROOT, '_e2e', 'shots');
 fs.mkdirSync(OUT, { recursive: true });
 
-const BASE = process.env.BASE || 'http://127.0.0.1:8123';
+const BASE = process.env.BASE || 'http://127.0.0.1:8848';
 const steps = [];
 let failed = 0;
 
@@ -231,6 +231,104 @@ try {
     n === 0 ? ok(`快捷模式「${m}」已移除`) : bad(`快捷模式 ${m} 仍存在`);
   }
 
+  // ---- 自由旋转量程 ±90° ----
+  {
+    const rEl = page.locator('.angle-num[data-key="rotate"]');
+    const rMin = await rEl.getAttribute('min');
+    const rMax = await rEl.getAttribute('max');
+    parseFloat(rMin) === -90 && parseFloat(rMax) === 90
+      ? ok('自由旋转量程 ±90°')
+      : bad('自由旋转量程', `${rMin} ~ ${rMax}`);
+
+    // 拖拽通道也必须能打到 45° 以上（原先硬编码 clamp 到 45 会在这里露馅）。
+    // 注意方向：从画布左侧拖到右侧是 dx>0 → rotate 递增。
+    await page.click('#angleMode button[data-m="rotate"]');
+    await page.click('#angleResetAll');
+    await page.mouse.move(box.x + box.width * 0.1, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.9, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    const dragged = parseFloat(await rEl.inputValue());
+    dragged > 45 ? ok('拖拽可超过 45°（量程已放开）', `${dragged.toFixed(1)}°`) : bad('拖拽仍未突破 45°', `${dragged}°`);
+
+    // 数值输入 90 应被接受（不被 clamp 到 45）
+    await rEl.fill('90');
+    await rEl.press('Enter');
+    const r90 = parseFloat(await rEl.inputValue());
+    r90 === 90 ? ok('数值输入 90° 被接受') : bad('数值输入 90° 被 clamp', `${r90}`);
+
+    // 90° 下画面应有内容（不是全透明 / 全黑）
+    const m90 = await fgMetrics();
+    m90 && m90.area > 0 ? ok('旋转 90° 后画面仍有前景', `面积 ${m90.area}`) : bad('旋转 90° 后画面为空');
+    await page.click('#angleResetAll');
+  }
+
+  // ---- 镜像功能 ----
+  {
+    const mBefore = await fgMetrics();
+    const mir = page.locator('#mirrorOn');
+    (await mir.count()) === 1 ? ok('镜像开关存在于面板') : bad('镜像开关缺失');
+
+    // 镜像后画面必须变化
+    await mir.check();
+    await page.waitForTimeout(150);
+    const mAfter = await fgMetrics();
+    const changed = mBefore && mAfter
+      ? Math.abs(mAfter.cx - mBefore.cx) + mAfter.bbox.reduce((s, v, i) => s + Math.abs(v - mBefore.bbox[i]), 0)
+      : 0;
+    changed > 3 ? ok('镜像后画面发生变化', `位移量 ${changed.toFixed(1)}`) : bad('镜像后画面未变化', `${changed}`);
+
+    // 镜像的几何本质：内容左右翻面 → bbox 宽度不变、质心关于画布中线对称
+    const cw = await page.evaluate(() => document.querySelector('#cvMain').width);
+    if (mBefore && mAfter) {
+      const expectCx = cw - mBefore.cx;
+      Math.abs(mAfter.cx - expectCx) < 6
+        ? ok('镜像 = 质心关于画布中线对称', `${mBefore.cx.toFixed(1)} → ${mAfter.cx.toFixed(1)}（期望 ${expectCx.toFixed(1)}）`)
+        : bad('镜像质心对称性不符', `${mAfter.cx.toFixed(1)} vs 期望 ${expectCx.toFixed(1)}`);
+      Math.abs(mAfter.bboxW - mBefore.bboxW) <= 2
+        ? ok('镜像不改变前景宽度', `${mBefore.bboxW} → ${mAfter.bboxW}`)
+        : bad('镜像改变了前景宽度', `${mBefore.bboxW} → ${mAfter.bboxW}`);
+    }
+
+    // 再翻一次应回到原状
+    await mir.uncheck();
+    await page.waitForTimeout(150);
+    const mBack = await fgMetrics();
+    mBack && mBefore && Math.abs(mBack.cx - mBefore.cx) < 2
+      ? ok('取消镜像后画面复原（对合性）', `质心差 ${Math.abs(mBack.cx - mBefore.cx).toFixed(2)}px`)
+      : bad('取消镜像未复原', `${mBack && mBack.cx} vs ${mBefore && mBefore.cx}`);
+
+    // 镜像必须可撤销
+    await mir.check();
+    await page.waitForTimeout(120);
+    await page.click('#btnUndo');
+    await page.waitForTimeout(150);
+    const mirState = await mir.isChecked();
+    !mirState ? ok('镜像可被撤销') : bad('镜像未被撤销');
+
+    // 全部复位后镜像应回到未勾选
+    await mir.check();
+    await page.waitForTimeout(120);
+    await page.click('#angleResetAll');
+    await page.waitForTimeout(150);
+    const afterReset = await mir.isChecked();
+    !afterReset ? ok('全部复位后镜像回到关闭') : bad('全部复位未清镜像');
+  }
+
+  // ---- 镜像 + 旋转组合不应报错 ----
+  {
+    await page.locator('#mirrorOn').check();
+    const rEl2 = page.locator('.angle-num[data-key="rotate"]');
+    await rEl2.fill('30');
+    await rEl2.press('Enter');
+    await page.waitForTimeout(150);
+    const mCombo = await fgMetrics();
+    mCombo && mCombo.area > 0 ? ok('镜像 + 30° 旋转组合正常渲染', `面积 ${mCombo.area}`) : bad('镜像组合渲染失败');
+    await page.locator('#mirrorOn').uncheck();
+    await page.click('#angleResetAll');
+    await page.waitForTimeout(150);
+  }
+
   // ---- 水平吸附：输入 1.2 应归零 ----
   await page.click('#angleMode button[data-m="rotate"]');
   const rotNum2 = page.locator('.angle-num[data-key="rotate"]');
@@ -253,6 +351,14 @@ try {
     : bad('Shift 方向键细调', `${nudge1} -> ${nudge2}`);
 
   // ---- 三档复位 ----
+  // 先把 pitch 设成 12，才能验证「复位本组」不会误伤其他组。
+  // （中间新增的镜像用例会调用全部复位，所以这里必须重新设置一次）
+  {
+    const pEl = page.locator('.angle-num[data-key="pitch"]');
+    await pEl.fill('12');
+    await pEl.press('Enter');
+  }
+  await page.click('#angleMode button[data-m="rotate"]');
   await page.click('#angleReset');
   const afterGroupReset = await page.inputValue('.angle-num[data-key="rotate"]');
   const pitchStill = await page.inputValue('.angle-num[data-key="pitch"]');
@@ -360,6 +466,8 @@ try {
   // 导出的 JSON 不应再含有已移除的字段
   const hasRemoved = ['roll', 'yaw', 'perspX', 'perspY'].some((k) => k in parsed.params);
   !hasRemoved ? ok('导出 JSON 不含已移除字段') : bad('导出 JSON 仍含已移除字段', JSON.stringify(parsed.params));
+  // 镜像字段应被持久化
+  'mirror' in parsed.params ? ok('导出 JSON 含 mirror 字段', String(parsed.params.mirror)) : bad('导出 JSON 缺 mirror 字段');
 
   // ---- 改掉参数，再导入还原 ----
   await page.click('#angleResetAll');
@@ -396,6 +504,67 @@ try {
   }
 
   await page.screenshot({ path: path.join(OUT, '04-导出面板.png') });
+
+  // ---- 模型加载反馈（弱网可用性）----
+  (await page.$('#loadRetry')) ? ok('加载遮罩含重试按钮 #loadRetry') : bad('缺少 #loadRetry 重试按钮');
+  (await page.isHidden('#loadRetry')) ? ok('重试按钮默认隐藏') : bad('重试按钮默认应隐藏');
+
+  // 进度回调：注册探针后强制重跑一次初始化，确认生命周期事件齐全
+  // 注意：首次加载时模型可能已被预加载缓存，必须 force=true 才能重新触发事件
+  const phases = await page.evaluate(async () => {
+    const m = await import('./js/matting.js');
+    const seen = [];
+    m.setProgressHandler((p) => seen.push(p));
+    await m.initMatting(true);
+    return seen;
+  });
+  const hasReady = phases.includes('ready');
+  hasReady ? ok('初始化触发 ready 事件', phases.join(' → ')) : bad('未触发 ready 事件', JSON.stringify(phases));
+  phases.includes('prefetch') && phases.includes('parsing')
+    ? ok('初始化含 prefetch → parsing 阶段', phases.join(' → '))
+    : bad('生命周期阶段缺失', JSON.stringify(phases));
+
+  // 失败态可切换 + 重试可恢复
+  const failState = await page.evaluate(() => {
+    const box = document.querySelector('#loading');
+    const btn = document.querySelector('#loadRetry');
+    box.classList.remove('hidden');
+    btn.hidden = false;
+    return { boxVisible: !box.classList.contains('hidden'), btnVisible: !btn.hidden };
+  });
+  failState.boxVisible && failState.btnVisible
+    ? ok('可进入失败态并露出重试按钮')
+    : bad('失败态切换异常', JSON.stringify(failState));
+
+  // 注意：切到导出 tab 后 #loadRetry 位于舞台区，page.click 的可见性校验可能
+  // 因面板遮挡而静默不触发，这里直接用原生 click 派发，确保命中 handler
+  await page.evaluate(() => document.querySelector('#loadRetry').click());
+  // 重试可能重跑整条抠图流程，改为轮询等待遮罩关闭，而不是死等固定时长
+  let recovered = { hidden: false };
+  const rDeadline = Date.now() + 30000;
+  const rSeen = [];
+  while (Date.now() < rDeadline) {
+    recovered = await page.evaluate(() => ({
+      hidden: document.querySelector('#loading').classList.contains('hidden'),
+      btnHidden: document.querySelector('#loadRetry').hidden,
+      txt: document.querySelector('#loadTxt').textContent,
+    }));
+    if (!rSeen.includes(recovered.txt)) rSeen.push(recovered.txt);
+    if (recovered.hidden) break;
+    await page.waitForTimeout(300);
+  }
+  recovered.hidden
+    ? ok('点重试后恢复（遮罩关闭）', `btnHidden=${recovered.btnHidden}`)
+    : bad('重试未恢复', JSON.stringify(recovered) + ' 文案轨迹=' + JSON.stringify(rSeen));
+
+  // 初始化失败后不得让坏 Promise 永久缓存（否则重试永远无效）
+  const noStaleCache = await page.evaluate(async () => {
+    const m = await import('./js/matting.js');
+    const a = await m.initMatting(false);
+    const b = await m.initMatting(false);
+    return !!(a && b && a.ok === b.ok);
+  });
+  noStaleCache ? ok('重复调用 initMatting 结果一致（无坏缓存）') : bad('initMatting 缓存异常');
 
   // ---- 手机视口 ----
   await page.setViewportSize({ width: 390, height: 844 });

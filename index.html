@@ -53,7 +53,7 @@
         <div class="photo" id="photo">
           <canvas id="cvMain"></canvas>
           <canvas id="cvGuide"></canvas>
-          <div class="loading hidden" id="loading"><span class="spin"></span><p id="loadTxt">正在抠图…</p></div>
+          <div class="loading hidden" id="loading"><span class="spin"></span><p id="loadTxt">正在抠图…</p><button type="button" class="btn small" id="loadRetry" hidden>重试加载模型</button></div>
         </div>
       </div>
 
@@ -128,10 +128,20 @@
         <div class="field">
           <label>快捷模式</label>
           <div class="seg small" id="angleMode">
-            <button data-m="rotate" class="on">画布旋转</button>
+            <button data-m="rotate" class="on">自由旋转</button>
             <button data-m="pitch">俯仰纠正</button>
           </div>
           <p class="hint" id="angleHint">拖动画布上的圆环手柄可直接旋转。</p>
+        </div>
+
+        <div class="field">
+          <label>镜像</label>
+          <div class="seg small">
+            <label class="chk" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="mirrorOn" />
+              <span>左右镜像翻转</span>
+            </label>
+          </div>
         </div>
 
         <div class="field">

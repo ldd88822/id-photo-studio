@@ -3,6 +3,7 @@
 
 import {
   ANGLE_PARAMS,
+  ANGLE_FLAGS,
   defaultParams,
   isNeutral,
   buildMatrix,
@@ -13,7 +14,7 @@ import { History } from './history.js';
 const $ = (s, r = document) => r.querySelector(s);
 
 const GROUPS = {
-  rotate: ['rotate'],
+  rotate: ['rotate', 'mirror'], // 镜像归到旋转组：都是「摆正照片朝向」的操作
   pitch: ['pitch'],
 };
 
@@ -275,7 +276,9 @@ export class AngleController {
     const keys = GROUPS[this.mode] || [];
     for (const k of keys) {
       const def = ANGLE_PARAMS.find((p) => p.key === k);
-      if (def) this.params[k] = def.def; // 用 def 而非 0（rotate/roll/pitch/yaw 恰为 0，其余不为 0）
+      if (def) this.params[k] = def.def; // 用 def 而非 0（zoom 等默认值不是 0）
+      const flag = ANGLE_FLAGS.find((f) => f.key === k);
+      if (flag) this.params[k] = flag.def;
     }
     this._syncSliders();
     this.deps.onChange();
@@ -369,6 +372,14 @@ export class AngleController {
       this._syncModeUI();
     });
 
+    // 镜像开关（布尔参数，不走滑块通道）
+    $('#mirrorOn')?.addEventListener('change', (e) => {
+      this.params.mirror = !!e.target.checked;
+      this.deps.onChange();
+      this.commit('左右镜像');
+      this.seal();
+    });
+
     // 旋转中心
     $('#pivotMode')?.addEventListener('click', (e) => {
       const b = e.target.closest('button[data-p]');
@@ -422,11 +433,8 @@ export class AngleController {
     const hint = $('#angleHint');
     if (hint) {
       const map = {
-        rotate: '拖动画布上的圆环手柄可直接旋转。',
-        roll: '左右拖动画面：绕视线轴倾斜，用于纠正歪头。',
-        yaw: '左右拖动画面：绕垂直轴转动，用于纠正侧脸。',
+        rotate: '拖动画布上的圆环手柄可直接旋转，最大 ±90°。',
         pitch: '上下拖动画面：俯仰纠正，用于仰拍 / 俯拍。',
-        persp: '拖动画面四角可矫正梯形透视变形。',
       };
       hint.textContent = map[this.mode] || '';
     }
@@ -450,6 +458,11 @@ export class AngleController {
       const v = this.params[key];
       if (typeof v === 'number') el.value = el.classList.contains('angle-num') ? fmt(v) : String(v);
     });
+    // 布尔开关单独同步（resetAll / undo / 导入 JSON 后都要回到正确勾选态）
+    for (const f of ANGLE_FLAGS) {
+      const el = document.getElementById(f.key === 'mirror' ? 'mirrorOn' : f.key + 'On');
+      if (el) el.checked = !!this.params[f.key];
+    }
   }
 
   _syncHistoryUI(st) {
@@ -526,10 +539,11 @@ export class AngleController {
       return true;
     }
 
-    const SENS = { rotate: 42, pitch: 28 };
+    const SENS = { rotate: 60, pitch: 28 };
     switch (this.mode) {
       case 'rotate':
-        this.params.rotate = clampv(this.params.rotate + dx * SENS.rotate, -45, 45);
+        // 满量程 ±90°，拖满画布宽度对应 60°，两倍画布宽才能打到端点
+        this.params.rotate = clampv(this.params.rotate + dx * SENS.rotate, -90, 90);
         break;
       case 'pitch':
         this.params.pitch = clampv(this.params.pitch - dy * SENS.pitch, -25, 25);

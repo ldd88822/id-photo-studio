@@ -93,6 +93,16 @@ export function translate(tx, ty) {
 }
 
 /**
+ * 镜像（左右翻转）矩阵。
+ * 正向语义：把画面沿过 (cx,cy) 的**竖直线**做一次左右翻面。
+ * 由于本矩阵链是「输出 → 源图」的反向映射，翻转是对合的（自己的逆就是自己），
+ * 因此同一个矩阵既表达正向翻转也表达反向翻转，无需取逆。
+ */
+export function mirrorX(cx) {
+  return [-1, 0, 2 * cx, 0, 1, 0, 0, 0, 1];
+}
+
+/**
  * 3D 旋转投影矩阵（仅俯仰）。
  * pitch：绕水平轴（低头/抬头），以 deg 传入，作用在归一化坐标（x,y ∈ [-1,1]）。
  */
@@ -135,7 +145,7 @@ export function distortFactor(k1, dx, dy) {
 
 /**
  * 由参数对象构建「输出像素 → 源图像素」的完整矩阵。
- * params: { rotate, pitch, zoom, distort, fov }
+ * params: { mirror, rotate, pitch, zoom, distort, fov }
  * 输出画布尺寸 ow×oh，源图尺寸 sw×sh，可选旋转中心 pivot（像素坐标，默认画布中心）。
  *
  * 关键点：乘法顺序。若 M = A·B，则先施加 B 再施加 A（右结合）。
@@ -173,10 +183,17 @@ export function buildMatrix(params, ow, oh, sw, sh, pivot, view) {
   // 这样旋转/透视都以画布中心为基准，不会被 cover 的缩放系数污染。
   let geo = identity();
 
-  // ② 画面内旋转（2D，绕画布中心）
+  // ② 镜像（最内层之一，作用于源图本身的朝向）
+  //
+  //    位置很关键：镜像放在**几何链的最内层**，即「先翻转源图，再做后续变换」。
+  //    这样它翻转的是照片内容本身（左右脸互换），而不是把已经转好的画面再镜像一次。
+  //    轴向以画布中心 mx 为基准 —— 镜像语义是「把这幅照片翻个面」，与旋转中心无关。
+  if (params.mirror) geo = multiply(mirrorX(mx), geo);
+
+  // ③ 画面内旋转（2D，绕旋转中心）
   if (params.rotate) geo = multiply(rotateDeg(params.rotate, cx, cy), geo);
 
-  // ③ 3D 旋转（归一化坐标：nx = 2x/w - 1）
+  // ④ 3D 旋转（归一化坐标：nx = 2x/w - 1）
   const has3D = !!params.pitch;
   if (has3D) {
     const r3 = rotation3D(params.pitch || 0, params.fov || 1.8);
@@ -275,16 +292,26 @@ function clampInt(v, a, b) {
 /* ==================== 参数定义 ==================== */
 
 export const ANGLE_PARAMS = [
-  { key: 'rotate', label: '水平旋转', unit: '°', min: -45, max: 45, step: 0.1, def: 0, hint: '整幅画面左右摆正' },
+  { key: 'rotate', label: '自由旋转', unit: '°', min: -90, max: 90, step: 0.1, def: 0, hint: '整幅画面左右摆正，可转到 90°' },
   { key: 'pitch', label: '俯仰（Pitch）', unit: '°', min: -25, max: 25, step: 0.1, def: 0, hint: '绕水平轴俯仰，纠正仰拍/俯拍' },
   { key: 'zoom', label: '画面缩放', min: 0.5, max: 2, step: 0.005, def: 1, hint: '补偿旋转后的留白' },
   { key: 'distort', label: '镜头畸变', min: -0.3, max: 0.3, step: 0.005, def: 0, hint: '桶形 / 枕形畸变校正（整幅后处理）' },
   { key: 'fov', label: '镜头距离', min: 0.8, max: 4, step: 0.05, def: 1.8, hint: '越小透视越强（3D 旋转生效时）' },
 ];
 
+/**
+ * 布尔型开关参数（不是数值滑块，单独列出）。
+ * 之所以不塞进 ANGLE_PARAMS：它没有 min/max/step，滑块渲染逻辑套不上，
+ * 硬塞进去会让「参数表驱动 UI」这条路反而变绕。
+ */
+export const ANGLE_FLAGS = [
+  { key: 'mirror', label: '左右镜像', def: false, hint: '把照片水平翻面，用于纠正左右颠倒的扫描件 / 自拍' },
+];
+
 export function defaultParams() {
   const o = {};
   for (const p of ANGLE_PARAMS) o[p.key] = p.def;
+  for (const f of ANGLE_FLAGS) o[f.key] = f.def;
   return o;
 }
 
@@ -292,6 +319,9 @@ export function isNeutral(params) {
   for (const p of ANGLE_PARAMS) {
     const def = p.def;
     if (Math.abs((params[p.key] ?? def) - def) > 1e-6) return false;
+  }
+  for (const f of ANGLE_FLAGS) {
+    if (!!params[f.key] !== !!f.def) return false;
   }
   return true;
 }

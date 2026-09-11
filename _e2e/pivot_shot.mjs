@@ -6,7 +6,7 @@ const b = await chromium.launchPersistentContext('C://Users//Public//pw-render//
   args: ['--no-sandbox','--disable-dev-shm-usage','--disable-gpu'], timeout: 90000,
 });
 const page = await b.newPage();
-await page.goto('http://127.0.0.1:8123/index.html', { waitUntil: 'domcontentloaded' });
+await page.goto('http://127.0.0.1:8848/index.html', { waitUntil: 'domcontentloaded' });
 await page.setInputFiles('#file', path.join(ROOT, '_e2e', 'portrait2.jpg'));
 await page.waitForFunction(() => {
   const cv = document.querySelector('#cvMain');

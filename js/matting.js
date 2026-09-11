@@ -6,19 +6,89 @@ let fileset = null;
 let segmenter = null;
 let faceDetector = null;
 let initPromise = null;
+let lastError = null;
 
 const VENDOR = new URL('../vendor/', import.meta.url).href;
 
+// wasm 体积 9.4MB，弱网（GitHub Pages 国内约 77KB/s）可达 2 分钟以上。
+// 单独给 wasm 一个长超时，避免整体卡死无反馈。
+const WASM_TIMEOUT_MS = 180000;
+
+let onProgress = null;
+/** 注册初始化进度回调：(phase, detail) => void */
+export function setProgressHandler(fn) {
+  onProgress = fn;
+}
+function emit(phase, detail) {
+  try {
+    if (onProgress) onProgress(phase, detail);
+  } catch (e) {
+    /* 回调异常不影响主流程 */
+  }
+}
+
+/**
+ * 预取 wasm 并上报下载进度。
+ * 注意：MediaPipe 的 FilesetResolver 会自行下载 wasm，无法复用我们的 blob，
+ * 因此这里仅在「首次访问 / 无 Service Worker 缓存」时做一次轻量探测，
+ * 目的是拿到真实下载速度并给用户进度反馈，不落地 blob（避免重复占内存）。
+ * 探测失败不抛错，交回 MediaPipe 自行处理。
+ */
+async function probeWasmSpeed() {
+  const url = VENDOR + 'wasm/vision_wasm_internal.wasm';
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), WASM_TIMEOUT_MS);
+    const t0 = Date.now();
+    const res = await fetch(url, { signal: ctrl.signal, cache: 'force-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const total = Number(res.headers.get('content-length')) || 9423986;
+    if (!res.body || !res.body.getReader) {
+      clearTimeout(timer);
+      return { total, kbps: 0, ms: Date.now() - t0 };
+    }
+    const reader = res.body.getReader();
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      got += value.length;
+      const pct = Math.min(99, Math.round((got / total) * 100));
+      const secs = (Date.now() - t0) / 1000;
+      const kbps = secs > 0 ? Math.round(got / 1024 / secs) : 0;
+      emit('download', { pct, got, total, kbps });
+    }
+    clearTimeout(timer);
+    emit('download', { pct: 100, got, total, kbps: 0 });
+    return { total, ms: Date.now() - t0 };
+  } catch (e) {
+    emit('download-failed', { message: String((e && e.message) || e) });
+    return null;
+  }
+}
+
 async function loadVision() {
   if (vision) return vision;
+  emit('loading-bundle', {});
   vision = await import(new URL('../vendor/vision_bundle.mjs', import.meta.url).href);
   fileset = fileset || (await vision.FilesetResolver.forVisionTasks(VENDOR + 'wasm'));
   return vision;
 }
 
-export async function initMatting() {
+export async function initMatting(force) {
+  if (force) {
+    // 手动重试：清掉上一次失败的缓存，允许重新走一遍
+    initPromise = null;
+    lastError = null;
+    segmenter = null;
+    faceDetector = null;
+  }
   if (initPromise) return initPromise;
   initPromise = (async () => {
+    lastError = null;
+    emit('prefetch', {});
+    await probeWasmSpeed();
+    emit('parsing', {});
     const v = await loadVision();
     // 人像分割：优先 GPU，失败回退 CPU
     for (const delegate of ['GPU', 'CPU']) {
@@ -32,6 +102,7 @@ export async function initMatting() {
         break;
       } catch (e) {
         segmenter = null;
+        lastError = String((e && e.message) || e);
       }
     }
     // 人脸检测（用于自动构图），失败不影响主流程
@@ -43,9 +114,20 @@ export async function initMatting() {
     } catch (e) {
       faceDetector = null;
     }
-    return { ok: !!segmenter, face: !!faceDetector };
+    emit('ready', { ok: !!segmenter, face: !!faceDetector });
+    return { ok: !!segmenter, face: !!faceDetector, error: lastError };
   })();
+  // 失败时不缓存坏 Promise，让用户点重试能恢复
+  initPromise.catch((e) => {
+    lastError = String((e && e.message) || e);
+    if (!force) initPromise = null;
+  });
   return initPromise;
+}
+
+/** 上一次初始化失败的原因（无失败返回 null） */
+export function initError() {
+  return lastError;
 }
 
 export function hasSegmenter() {
